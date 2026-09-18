@@ -1,0 +1,11 @@
+# Location of the encrypted SSH config file. Must be an absolute path.
+MSSH_CONFIG_PATH: ~/.mssh/config
+
+# Default identity file offered when adding a new host.
+DEFAULT_SSH_KEY_PATH: ~/.ssh/id_rsa
+
+# Master password. If set, mssh uses it for connect/add/edit/delete.
+# NOTE: `mssh` (no args) and `mssh config list` ALWAYS prompt for the
+# password and ignore this value, regardless of whether it is set.
+# If you set this, keep this file `chmod 0600` — see README.md's threat model.
+MSSH_PASSWORD:

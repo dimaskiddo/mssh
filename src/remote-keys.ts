@@ -45,8 +45,14 @@ const KEY_TYPE_BY_REMOTE_NAME: Record<string, string> = {
 // from. remoteName is already isValidKeyFilename-checked by the caller, so
 // the fallback cannot introduce a path separator; a non-stock name keeps its
 // own basename rather than being labelled with a crypto type we did not
-// actually verify.
+// actually verify. jumpAlias is a Host alias out of the user's own config,
+// which isValidHostName permits "../../../../tmp/evil" through — checked
+// here with the same allowlist so it cannot become a path component under
+// keysDir(), rather than trusting it the way remoteName's caller already has.
 export function localKeyName(jumpAlias: string, remoteName: string): string {
+  if (!isValidKeyFilename(jumpAlias)) {
+    throw new Error(`invalid jump host alias for a local key filename: ${jumpAlias}`);
+  }
   const suffix = KEY_TYPE_BY_REMOTE_NAME[remoteName.toLowerCase()] ?? remoteName.replace(/\.[^.]*$/, "");
   return `${jumpAlias}_${suffix}.pem`;
 }

@@ -13,7 +13,14 @@ import {
   withKeepAlive,
   KEEP_ALIVE_INTERVAL,
   unquote,
+  normalizeDirectiveKey,
+  decodeValue,
+  stripComment,
+  hostLabel,
+  hostHasName,
+  connectableNames,
   EXECUTING_DIRECTIVES,
+  REFUSED_DIRECTIVES,
   type Host,
 } from "../src/ssh-config";
 
@@ -33,7 +40,7 @@ test("parse extracts fields from a multi-host config text", () => {
   const hosts = parse(SAMPLE);
   expect(hosts).toHaveLength(2);
 
-  const myserver = hosts.find((h) => h.name === "myserver");
+  const myserver = hosts.find((h) => hostHasName(h, "myserver"));
   expect(myserver).toBeDefined();
   expect(myserver?.hostname).toBe("1.2.3.4");
   expect(myserver?.port).toBe("2222");
@@ -41,7 +48,7 @@ test("parse extracts fields from a multi-host config text", () => {
   expect(myserver?.identityFile).toBe("~/.ssh/id_rsa");
   expect(myserver?.proxyJump).toBe("jumpbox");
 
-  const jumpbox = hosts.find((h) => h.name === "jumpbox");
+  const jumpbox = hosts.find((h) => hostHasName(h, "jumpbox"));
   expect(jumpbox).toBeDefined();
   expect(jumpbox?.hostname).toBe("5.6.7.8");
   expect(jumpbox?.user).toBe("admin");
@@ -92,6 +99,24 @@ match exec "id"
 `;
   const hosts = parse(text);
   expect(hosts).toHaveLength(1);
+  // The audit gap this test used to miss: asserting only length/extras let a
+  // Match block's directives silently attach to the PRECEDING host's fields
+  // pass undetected, since HostName isn't stored in extras at all.
+  expect(hosts[0]?.hostname).toBe("1.2.3.4");
+  expect(hosts[0]?.extras).toEqual([]);
+});
+
+test("directives after a Match block do not attach to the host preceding it, even without a Host line to end the block", () => {
+  const text = `Host myserver
+  HostName 1.2.3.4
+
+Match host foo
+  ProxyJump should-not-attach
+  ServerAliveCountMax 99
+`;
+  const hosts = parse(text);
+  expect(hosts).toHaveLength(1);
+  expect(hosts[0]?.proxyJump).toBeUndefined();
   expect(hosts[0]?.extras).toEqual([]);
 });
 
@@ -107,7 +132,7 @@ test("parse keeps a safe extra alongside a dropped command-executing directive",
 
 test("serialize throws when a Host's extras carry a deny-listed directive", () => {
   const host: Host = {
-    name: "myserver",
+    names: ["myserver"],
     extras: [{ key: "ProxyCommand", value: "id" }],
   };
   expect(() => serialize([host])).toThrow(/refusing to write/i);
@@ -119,20 +144,110 @@ test("EXECUTING_DIRECTIVES matches lowercase keys only, as parse/serialize both 
   }
 });
 
+test("normalizeDirectiveKey unquotes a wrapped key and rejects a malformed one", () => {
+  expect(normalizeDirectiveKey("ProxyCommand")).toBe("ProxyCommand");
+  expect(normalizeDirectiveKey('"ProxyCommand"')).toBe("ProxyCommand");
+  expect(normalizeDirectiveKey('Pro"xy"Command')).toBeUndefined();
+  expect(normalizeDirectiveKey("Proxy\\Command")).toBeUndefined();
+});
+
+test("parse drops a directive whose key is quoted, instead of letting it dodge the deny-list", () => {
+  const text = `Host myserver
+  HostName 1.2.3.4
+  "ProxyCommand" id
+`;
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([]);
+  expect(hosts[0]?.hostname).toBe("1.2.3.4");
+});
+
+test("parse drops a directive whose key is not a syntactically valid ssh_config keyword", () => {
+  const text = `Host myserver
+  HostName 1.2.3.4
+  Pro"xy"Command id
+`;
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([]);
+});
+
+test("parse drops Include, the same as any other refused directive", () => {
+  const text = `Host myserver
+  HostName 1.2.3.4
+  Include /tmp/evil
+`;
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([]);
+  expect(hosts[0]?.hostname).toBe("1.2.3.4");
+});
+
+test("REFUSED_DIRECTIVES is a superset of EXECUTING_DIRECTIVES plus Include", () => {
+  for (const key of EXECUTING_DIRECTIVES) {
+    expect(REFUSED_DIRECTIVES.has(key)).toBe(true);
+  }
+  expect(REFUSED_DIRECTIVES.has("include")).toBe(true);
+});
+
+test("serialize throws when a Host's extras carry Include, not just an executing directive", () => {
+  const host: Host = {
+    names: ["myserver"],
+    extras: [{ key: "Include", value: "/tmp/evil" }],
+  };
+  expect(() => serialize([host])).toThrow(/refusing to write/i);
+});
+
+test("parse keeps PermitLocalCommand=no, the one deny-listed directive that hardens rather than executes", () => {
+  const text = `Host myserver
+  HostName 1.2.3.4
+  PermitLocalCommand no
+`;
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([{ key: "PermitLocalCommand", value: "no" }]);
+});
+
+test("parse still drops PermitLocalCommand=yes, which enables LocalCommand", () => {
+  const text = `Host myserver
+  HostName 1.2.3.4
+  PermitLocalCommand yes
+`;
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([]);
+});
+
+test("serialize round-trips a Host carrying PermitLocalCommand=no instead of throwing", () => {
+  const host: Host = {
+    names: ["myserver"],
+    extras: [{ key: "PermitLocalCommand", value: "no" }],
+  };
+  expect(serialize([host])).toContain("PermitLocalCommand no");
+});
+
+test("serialize still throws when a Host's extras carry PermitLocalCommand=yes", () => {
+  const host: Host = {
+    names: ["myserver"],
+    extras: [{ key: "PermitLocalCommand", value: "yes" }],
+  };
+  expect(() => serialize([host])).toThrow(/refusing to write/i);
+});
+
 test("addHost appends a new host and returns a new array", () => {
   const hosts = parse(SAMPLE);
-  const newHost: Host = { name: "newone", extras: [] };
+  const newHost: Host = { names: ["newone"], extras: [] };
   const result = addHost(hosts, newHost);
 
   expect(result).not.toBe(hosts);
   expect(result).toHaveLength(3);
   expect(hosts).toHaveLength(2);
-  expect(result.find((h) => h.name === "newone")).toEqual(newHost);
+  expect(result.find((h) => hostHasName(h, "newone"))).toEqual(newHost);
 });
 
 test("addHost throws when the host name already exists", () => {
   const hosts = parse(SAMPLE);
-  expect(() => addHost(hosts, { name: "myserver", extras: [] })).toThrow();
+  expect(() => addHost(hosts, { names: ["myserver"], extras: [] })).toThrow();
+});
+
+test("addHost throws when a new pattern collides with any existing pattern, not just an exact whole-name match", () => {
+  const hosts: Host[] = [{ names: ["web1", "web2"], extras: [] }];
+  expect(() => addHost(hosts, { names: ["web3", "web2"], extras: [] })).toThrow(/web2/);
 });
 
 test("updateHostField changes one field on the named host without touching others", () => {
@@ -140,16 +255,22 @@ test("updateHostField changes one field on the named host without touching other
   const result = updateHostField(hosts, "myserver", "hostname", "9.9.9.9");
 
   expect(result).not.toBe(hosts);
-  const updated = result.find((h) => h.name === "myserver");
+  const updated = result.find((h) => hostHasName(h, "myserver"));
   expect(updated?.hostname).toBe("9.9.9.9");
   expect(updated?.port).toBe("2222");
   expect(updated?.user).toBe("root");
 
-  const original = hosts.find((h) => h.name === "myserver");
+  const original = hosts.find((h) => hostHasName(h, "myserver"));
   expect(original?.hostname).toBe("1.2.3.4");
 
-  const jumpbox = result.find((h) => h.name === "jumpbox");
-  expect(jumpbox).toEqual(hosts.find((h) => h.name === "jumpbox"));
+  const jumpbox = result.find((h) => hostHasName(h, "jumpbox"));
+  expect(jumpbox).toEqual(hosts.find((h) => hostHasName(h, "jumpbox")));
+});
+
+test("updateHostField matches a host by any of its patterns", () => {
+  const hosts: Host[] = [{ names: ["a", "b"], extras: [] }];
+  const result = updateHostField(hosts, "b", "hostname", "1.1.1.1");
+  expect(result[0]?.hostname).toBe("1.1.1.1");
 });
 
 test("deleteHost removes the named host and returns a new array with one fewer entry", () => {
@@ -159,8 +280,15 @@ test("deleteHost removes the named host and returns a new array with one fewer e
   expect(result).not.toBe(hosts);
   expect(result).toHaveLength(1);
   expect(hosts).toHaveLength(2);
-  expect(result.find((h) => h.name === "jumpbox")).toBeUndefined();
-  expect(result.find((h) => h.name === "myserver")).toBeDefined();
+  expect(result.find((h) => hostHasName(h, "jumpbox"))).toBeUndefined();
+  expect(result.find((h) => hostHasName(h, "myserver"))).toBeDefined();
+});
+
+test("deleteHost removes a whole multi-pattern block when matched by any one of its patterns", () => {
+  const hosts: Host[] = [{ names: ["a", "b"], extras: [] }, { names: ["c"], extras: [] }];
+  const result = deleteHost(hosts, "b");
+  expect(result).toHaveLength(1);
+  expect(result[0]?.names).toEqual(["c"]);
 });
 
 test("hostsWithoutProxyJump returns only hosts whose proxyJump field is unset", () => {
@@ -168,7 +296,7 @@ test("hostsWithoutProxyJump returns only hosts whose proxyJump field is unset", 
   const result = hostsWithoutProxyJump(hosts);
 
   expect(result).toHaveLength(1);
-  expect(result[0]?.name).toBe("jumpbox");
+  expect(result[0]?.names).toEqual(["jumpbox"]);
 });
 
 test("parse accepts tab- and =-separated directives, matching OpenSSH", () => {
@@ -194,17 +322,22 @@ test("isValidHostName rejects empty and whitespace-containing names", () => {
 });
 
 test("serialize throws instead of emitting a newline-injected value as a real directive", () => {
-  const hosts: Host[] = [{ name: "web1", hostname: "h\n  ProxyCommand touch /tmp/pwned", extras: [] }];
+  const hosts: Host[] = [{ names: ["web1"], hostname: "h\n  ProxyCommand touch /tmp/pwned", extras: [] }];
   expect(() => serialize(hosts)).toThrow();
 });
 
-test("serialize throws on an invalid host name rather than emitting a corrupt Host line", () => {
-  const hosts: Host[] = [{ name: "", extras: [] }];
+test("serialize throws on an invalid host pattern rather than emitting a corrupt Host line", () => {
+  const hosts: Host[] = [{ names: [""], extras: [] }];
+  expect(() => serialize(hosts)).toThrow();
+});
+
+test("serialize throws when a Host has no name patterns at all", () => {
+  const hosts: Host[] = [{ names: [], extras: [] }];
   expect(() => serialize(hosts)).toThrow();
 });
 
 test("serialize throws when an extras directive carries an injected newline", () => {
-  const hosts: Host[] = [{ name: "web1", extras: [{ key: "ServerAliveInterval", value: "60\nProxyCommand id" }] }];
+  const hosts: Host[] = [{ names: ["web1"], extras: [{ key: "ServerAliveInterval", value: "60\nProxyCommand id" }] }];
   expect(() => serialize(hosts)).toThrow();
 });
 
@@ -224,12 +357,12 @@ Host jumpbox
   const hosts = parse(text);
   expect(hosts).toHaveLength(2);
 
-  const myserver = hosts.find((h) => h.name === "myserver");
+  const myserver = hosts.find((h) => hostHasName(h, "myserver"));
   expect(myserver?.hostname).toBe("1.2.3.4");
   expect(myserver?.user).toBe("root");
   expect(myserver?.extras).toEqual([]);
 
-  const jumpbox = hosts.find((h) => h.name === "jumpbox");
+  const jumpbox = hosts.find((h) => hostHasName(h, "jumpbox"));
   expect(jumpbox?.hostname).toBe("5.6.7.8");
   expect(jumpbox?.extras).toEqual([]);
 });
@@ -246,43 +379,61 @@ test("proxyJumpAliases splits a comma-separated chain, trimming whitespace", () 
 test("hostsForTarget returns only the target when it has no ProxyJump", () => {
   const hosts = parse(SAMPLE);
   const result = hostsForTarget(hosts, ["jumpbox"]);
-  expect(result.map((h) => h.name)).toEqual(["jumpbox"]);
+  expect(result.flatMap((h) => h.names)).toEqual(["jumpbox"]);
 });
 
 test("hostsForTarget pulls in a one-hop ProxyJump chain", () => {
   const hosts = parse(SAMPLE);
   const result = hostsForTarget(hosts, ["myserver"]);
-  expect(result.map((h) => h.name).sort()).toEqual(["jumpbox", "myserver"]);
+  expect(result.flatMap((h) => h.names).sort()).toEqual(["jumpbox", "myserver"]);
 });
 
 test("hostsForTarget pulls in a two-hop ProxyJump chain", () => {
   const hosts: Host[] = [
-    { name: "target", proxyJump: "mid", extras: [] },
-    { name: "mid", proxyJump: "edge", extras: [] },
-    { name: "edge", extras: [] },
-    { name: "unrelated", extras: [] },
+    { names: ["target"], proxyJump: "mid", extras: [] },
+    { names: ["mid"], proxyJump: "edge", extras: [] },
+    { names: ["edge"], extras: [] },
+    { names: ["unrelated"], extras: [] },
   ];
   const result = hostsForTarget(hosts, ["target"]);
-  expect(result.map((h) => h.name)).toEqual(["target", "mid", "edge"]);
+  expect(result.flatMap((h) => h.names)).toEqual(["target", "mid", "edge"]);
 });
 
 test("hostsForTarget terminates on a ProxyJump cycle instead of looping forever", () => {
   const hosts: Host[] = [
-    { name: "a", proxyJump: "b", extras: [] },
-    { name: "b", proxyJump: "a", extras: [] },
+    { names: ["a"], proxyJump: "b", extras: [] },
+    { names: ["b"], proxyJump: "a", extras: [] },
   ];
   const result = hostsForTarget(hosts, ["a"]);
-  expect(result.map((h) => h.name).sort()).toEqual(["a", "b"]);
+  expect(result.flatMap((h) => h.names).sort()).toEqual(["a", "b"]);
 });
 
 test("hostsForTarget preserves source order and keeps a glob-named host", () => {
   const hosts: Host[] = [
-    { name: "web*", extras: [] },
-    { name: "target", extras: [] },
-    { name: "other", extras: [] },
+    { names: ["web*"], extras: [] },
+    { names: ["target"], extras: [] },
+    { names: ["other"], extras: [] },
   ];
   const result = hostsForTarget(hosts, ["target"]);
-  expect(result.map((h) => h.name)).toEqual(["web*", "target"]);
+  expect(result.flatMap((h) => h.names)).toEqual(["web*", "target"]);
+});
+
+test("hostsForTarget also always keeps a negation-patterned host, since it's meaningless without its siblings", () => {
+  const hosts: Host[] = [
+    { names: ["*", "!excluded"], extras: [] },
+    { names: ["target"], extras: [] },
+  ];
+  const result = hostsForTarget(hosts, ["target"]);
+  expect(result.flatMap((h) => h.names)).toEqual(["*", "!excluded", "target"]);
+});
+
+test("hostsForTarget visits a multi-pattern host once, not once per pattern", () => {
+  const hosts: Host[] = [
+    { names: ["target"], proxyJump: "a,b", extras: [] },
+    { names: ["a", "b"], extras: [] },
+  ];
+  const result = hostsForTarget(hosts, ["target"]);
+  expect(result).toHaveLength(2);
 });
 
 test("hostsForTarget returns an empty array for an unknown target", () => {
@@ -291,37 +442,54 @@ test("hostsForTarget returns an empty array for an unknown target", () => {
 });
 
 test("withKeepAlive appends ServerAliveInterval to a host with no extras", () => {
-  const hosts: Host[] = [{ name: "web1", extras: [] }];
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }];
   expect(withKeepAlive(hosts)[0]?.extras).toEqual([{ key: "ServerAliveInterval", value: KEEP_ALIVE_INTERVAL }]);
 });
 
 test("withKeepAlive is idempotent across repeated applications", () => {
-  const hosts: Host[] = [{ name: "web1", extras: [] }];
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }];
   const once = withKeepAlive(hosts);
   const twice = withKeepAlive(once);
   expect(twice).toEqual(once);
 });
 
 test("withKeepAlive leaves an existing ServerAliveInterval (any case) untouched", () => {
-  const hosts: Host[] = [{ name: "web1", extras: [{ key: "serveraliveinterval", value: "30" }] }];
+  const hosts: Host[] = [{ names: ["web1"], extras: [{ key: "serveraliveinterval", value: "30" }] }];
   expect(withKeepAlive(hosts)[0]?.extras).toEqual([{ key: "serveraliveinterval", value: "30" }]);
 });
 
-test("serialize double-quotes a value containing a space", () => {
-  const hosts: Host[] = [
-    {
-      name: "jump",
-      identityFile: "/home/My User/.mssh/keys/jump.pem",
-      extras: [{ key: "RemoteCommand", value: "some command" }],
-    },
-  ];
+test("serialize double-quotes a modeled field's value containing a space", () => {
+  const hosts: Host[] = [{ names: ["jump"], identityFile: "/home/My User/.mssh/keys/jump.pem", extras: [] }];
   const text = serialize(hosts);
   expect(text).toContain('IdentityFile "/home/My User/.mssh/keys/jump.pem"');
-  expect(text).toContain('RemoteCommand "some command"');
+});
+
+test("serialize emits an extra's raw value verbatim, with no quoting added", () => {
+  const hosts: Host[] = [{ names: ["jump"], extras: [{ key: "RemoteCommand", value: "some command" }] }];
+  const text = serialize(hosts);
+  expect(text).toContain("RemoteCommand some command");
+  expect(text).not.toContain('"');
+});
+
+test("SendEnv with two names round-trips verbatim instead of merging into one quoted value", () => {
+  const text = "Host web1\n  SendEnv LANG LC_ALL\n";
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([{ key: "SendEnv", value: "LANG LC_ALL" }]);
+  expect(serialize(hosts)).toContain("SendEnv LANG LC_ALL");
+  expect(serialize(hosts)).not.toContain('"');
+});
+
+test("a duplicate extras directive accumulates instead of collapsing to one, since ssh's own duplicate rule is per-directive", () => {
+  const text = "Host web1\n  IdentityFile ~/.ssh/id_a\n  CertificateFile ~/.ssh/id_a.pem\n  CertificateFile ~/.ssh/id_b.pem\n";
+  const hosts = parse(text);
+  expect(hosts[0]?.extras).toEqual([
+    { key: "CertificateFile", value: "~/.ssh/id_a.pem" },
+    { key: "CertificateFile", value: "~/.ssh/id_b.pem" },
+  ]);
 });
 
 test("serialize leaves a space-free value unquoted", () => {
-  const hosts: Host[] = [{ name: "web1", identityFile: "/home/user/.ssh/id_rsa", extras: [] }];
+  const hosts: Host[] = [{ names: ["web1"], identityFile: "/home/user/.ssh/id_rsa", extras: [] }];
   expect(serialize(hosts)).toContain("IdentityFile /home/user/.ssh/id_rsa");
 });
 
@@ -331,19 +499,145 @@ test("parse strips surrounding double quotes from a value", () => {
 });
 
 test("a space-bearing path survives serialize -> parse -> serialize without accumulating quotes", () => {
-  const hosts: Host[] = [{ name: "web1", identityFile: "/a b/k.pem", extras: [] }];
+  const hosts: Host[] = [{ names: ["web1"], identityFile: "/a b/k.pem", extras: [] }];
   const first = serialize(hosts);
   const second = serialize(parse(first));
   expect(second).toBe(first);
   expect(second.match(/"/g)?.length).toBe(2);
 });
 
-test("serialize drops a literal quote character from a value", () => {
-  const hosts: Host[] = [{ name: "web1", identityFile: '/a"b/k.pem', extras: [] }];
-  expect(serialize(hosts)).toContain("IdentityFile /ab/k.pem");
+test("formatValue escapes a literal quote inside a value instead of dropping it", () => {
+  const hosts: Host[] = [{ names: ["web1"], identityFile: '/a"b/k.pem', extras: [] }];
+  const text = serialize(hosts);
+  expect(text).toContain('IdentityFile "/a\\"b/k.pem"');
+  // The old, lossy behavior made /a"b/k.pem and /ab/k.pem indistinguishable
+  // on disk, silently repointing IdentityFile at a different file.
+  expect(parse(text)[0]?.identityFile).toBe('/a"b/k.pem');
+});
+
+test("formatValue round-trip table, validated against real OpenSSH's IdentityFile parsing", () => {
+  const rows: Array<[string, string]> = [
+    ["a b", '"a b"'],
+    ["C:\\keys\\", '"C:\\\\keys\\\\"'],
+    ['/a"b', '"/a\\"b"'],
+    ["#x", '"#x"'],
+    // Any '#' triggers quoting, not just a boundary one — over-quoting a
+    // mid-token '#' is safe (it still round-trips) and simpler than
+    // tracking token-boundary position just to decide when to quote.
+    ["a#b", '"a#b"'],
+    ["~/.ssh/k", "~/.ssh/k"],
+  ];
+  for (const [value, expected] of rows) {
+    const text = serialize([{ names: ["h"], identityFile: value, extras: [] }]);
+    expect(text).toContain(`IdentityFile ${expected}`);
+    expect(parse(text)[0]?.identityFile).toBe(value);
+  }
+});
+
+test("ProxyJump is never quoted, even though it is never a value that would otherwise be safe to quote", () => {
+  // A quoted ProxyJump ("user@a:22") is a hard fatal in real ssh
+  // ("Invalid ProxyJump"). A plain alias never contains [\s#"'\\] so
+  // formatValue would never quote it anyway, but this pins the guarantee.
+  const text = serialize([{ names: ["h"], proxyJump: "bastion", extras: [] }]);
+  expect(text).toContain("ProxyJump bastion");
+  expect(text).not.toContain('"');
+});
+
+test("a trailing backslash in a path does not corrupt into an invalid-quotes value that bricks every later parse", () => {
+  const hosts: Host[] = [{ names: ["h"], identityFile: "C:\\keys\\", extras: [] }];
+  const text = serialize(hosts);
+  expect(() => parse(text)).not.toThrow();
+  expect(parse(text)[0]?.identityFile).toBe("C:\\keys\\");
 });
 
 test("unquote leaves an unquoted value untouched", () => {
   expect(unquote("plain")).toBe("plain");
   expect(unquote('"')).toBe('"');
+});
+
+test("stripComment cuts an unquoted, token-boundary comment", () => {
+  expect(stripComment("bob # c")).toBe("bob ");
+  expect(stripComment("bob#c")).toBe("bob#c");
+  expect(stripComment('"bob"#c')).toBe('"bob"#c');
+  expect(stripComment('"#x"')).toBe('"#x"');
+});
+
+test("decodeValue applies OpenSSH's escape rules", () => {
+  expect(decodeValue("a\\b")).toBe("a\\b");
+  expect(decodeValue("a\\\\b")).toBe("a\\b");
+  expect(decodeValue('a\\"b')).toBe('a"b');
+  expect(decodeValue("a\\ b")).toBe("a b");
+  expect(decodeValue("a\\tb")).toBe("a\\tb");
+});
+
+test("decodeValue returns undefined for an unterminated quote", () => {
+  expect(decodeValue('"unterminated')).toBeUndefined();
+});
+
+test("a directive with an unterminated quote is dropped rather than corrupting the host", () => {
+  const text = 'Host web1\n  HostName "1.2.3.4\n  User root\n';
+  const hosts = parse(text);
+  expect(hosts[0]?.hostname).toBeUndefined();
+  expect(hosts[0]?.user).toBe("root");
+});
+
+test("duplicate modeled-field directives are first-wins, matching ssh's own behavior", () => {
+  const text = "Host web1\n  HostName first\n  HostName second\n";
+  expect(parse(text)[0]?.hostname).toBe("first");
+});
+
+test("Host with multiple space-separated patterns parses into one Host with all of them, in source order", () => {
+  const hosts = parse("Host web1 web2\n  HostName 1.2.3.4\n");
+  expect(hosts).toHaveLength(1);
+  expect(hosts[0]?.names).toEqual(["web1", "web2"]);
+});
+
+test("Host web1 web2 previously write-locked the config; it now round-trips and re-saves cleanly", () => {
+  const hosts = parse("Host web1 web2\n  HostName 1.2.3.4\n");
+  expect(() => serialize(hosts)).not.toThrow();
+  expect(serialize(hosts)).toContain("Host web1 web2");
+});
+
+test("Host * !b (a wildcard with a negation) round-trips losslessly", () => {
+  const hosts = parse("Host * !b\n  Compression yes\n");
+  expect(hosts[0]?.names).toEqual(["*", "!b"]);
+  const reparsed = parse(serialize(hosts));
+  expect(reparsed).toEqual(hosts);
+});
+
+test("a bare Host line with no pattern is dropped rather than producing an empty-named host", () => {
+  const hosts = parse("Host\n  HostName 1.2.3.4\n");
+  expect(hosts).toHaveLength(0);
+});
+
+test("serialize(parse(x)) never throws, for host patterns ssh itself would also reject", () => {
+  const inputs = [
+    'Host a"b\n  HostName 1.2.3.4\n',
+    "Host a\\b\n  HostName 1.2.3.4\n",
+    "Host\n  HostName 1.2.3.4\n",
+    "Host web1 web2\n  HostName 1.2.3.4\n",
+    "Host * !b\n  Compression yes\n",
+  ];
+  for (const input of inputs) {
+    expect(() => serialize(parse(input))).not.toThrow();
+  }
+});
+
+test("hostLabel joins a multi-pattern host's names for display", () => {
+  expect(hostLabel({ names: ["a", "b"], extras: [] })).toBe("a b");
+});
+
+test("hostHasName matches any one of a host's patterns", () => {
+  const host: Host = { names: ["a", "b"], extras: [] };
+  expect(hostHasName(host, "a")).toBe(true);
+  expect(hostHasName(host, "b")).toBe(true);
+  expect(hostHasName(host, "c")).toBe(false);
+});
+
+test("connectableNames flattens every host's patterns and excludes glob/negation metacharacters", () => {
+  const hosts: Host[] = [
+    { names: ["a", "b"], extras: [] },
+    { names: ["*", "!c"], extras: [] },
+  ];
+  expect(connectableNames(hosts)).toEqual(["a", "b"]);
 });

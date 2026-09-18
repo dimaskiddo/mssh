@@ -97,7 +97,7 @@ if (existsSync(STAGING_DIR)) {
 console.log("🏗️ Compiling standalone binaries for all platforms...");
 runOrExit(["bun", "run", "build:all"]);
 
-const filesToBundle = ["README.md", "LICENSE", ".env.example"];
+const filesToBundle = ["README.md", "LICENSE"];
 for (const file of filesToBundle) {
   if (!existsSync(file)) {
     console.error(`❌ Error: ${file} is missing!`);
@@ -246,7 +246,7 @@ try {
     const fileData = readFileSync(asset.path);
 
     const uploadResponse = await fetch(
-      `https://uploads.github.com/repos/${owner}/${repo}/releases/${releaseId}/assets?name=${asset.name}`,
+      `https://uploads.github.com/repos/${owner}/${repo}/releases/${releaseId}/assets?name=${encodeURIComponent(asset.name)}`,
       {
         method: "POST",
         headers: {

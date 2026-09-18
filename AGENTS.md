@@ -65,7 +65,9 @@ mssh version, --version              # print product name, version, author — n
 - `resolvePassword({forcePrompt})` is the single place the auth split lives: `true` for bare `mssh`, `config list`, and `change-password`'s current-password step; `false` everywhere else. Changing this at a call site is a security regression.
 
 ### Command-Executing Directives
-- `EXECUTING_DIRECTIVES` (`src/ssh-config.ts`) is the single source of truth for `ssh_config` directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match`, etc.). `parse()` drops them silently instead of carrying them into `extras[]`; `assertSerializable()` throws if one reaches `serialize()` anyway; `connect.ts`'s `rejectedFlags()` reuses the same set for the `-o`/`-F` command-line guard. Never let this list drift into a second copy.
+- `EXECUTING_DIRECTIVES` (`src/ssh-config.ts`) is the single source of truth for `ssh_config` directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match`, etc.). `CONFIG_REDIRECTING_DIRECTIVES` (currently just `Include`) covers the other way a directive can reach the same outcome indirectly. `REFUSED_DIRECTIVES` is a derived union of both, exported as the single guard set — `parse()` and `assertSerializable()` (`src/ssh-config.ts`) and `rejectedFlags()` (`src/commands/connect.ts`) all consume `REFUSED_DIRECTIVES`, never `EXECUTING_DIRECTIVES` directly. Add a directive to one of the two source sets, never to `REFUSED_DIRECTIVES` itself — that is the one derivation point and it must never drift into a second copy.
+- A directive key is normalized with `normalizeDirectiveKey()` before it is classified against any list, including the deny-list — a quoted or otherwise malformed key (`"ProxyCommand" id`) would otherwise slip past every guard undetected. `rejectedFlags()`'s `-o` option name goes through the same function, so both surfaces apply identical normalization.
+- `Match` terminates the current host block on parse: `mssh` models no conditional directives, so a directive between a `Match` line and the next `Host` line must not attach to the host preceding the `Match` — it is discarded instead, which is stricter than ssh (which evaluates the condition) but is the only representable behavior in this data model.
 
 ### SSH Dependency Gating
 - `requireSsh()` before any plaintext SSH config touches disk on paths that need it (`connect` unconditionally, `setup` unconditionally, `add` only inside the opt-in key-extraction branch). **Never** on pure-local-crypto paths (`list`/`edit`/`delete`) — those must work on a machine with no ssh installed.
@@ -114,35 +116,35 @@ mssh version, --version              # print product name, version, author — n
 
 ```
 mssh/
-├── index.ts                 # Entry: argv dispatch only
+├── index.ts                   # Entry: argv dispatch only
 ├── src/
-│   ├── app-config.ts        # ~/.mssh path layout, config.yaml/.env loading, resolvePassword
-│   ├── crypto.ts            # seal/open — AES-256-GCM + scrypt
-│   ├── ssh-config.ts        # parse/serialize + pure Host mutations
-│   ├── store.ts             # loadRaw/loadHosts/saveHosts — bridges crypto + fs
-│   ├── secure-file.ts       # writeSecure/ensureSecureDir — chmod (POSIX) / icacls (Windows)
-│   ├── ssh-binary.ts        # resolveSsh/requireSsh — resolve ssh to an absolute path, per-OS install guidance
-│   ├── prompt.ts            # Thin wrappers over @inquirer/prompts
-│   ├── remote-keys.ts       # Remote ~/.ssh listing + key download
+│   ├── app-config.ts          # ~/.mssh path layout, config.yaml/.env loading, resolvePassword
+│   ├── crypto.ts              # seal/open — AES-256-GCM + scrypt
+│   ├── ssh-config.ts          # parse/serialize + pure Host mutations
+│   ├── store.ts               # loadRaw/loadHosts/saveHosts — bridges crypto + fs
+│   ├── secure-file.ts         # writeSecure/ensureSecureDir — chmod (POSIX) / icacls (Windows)
+│   ├── ssh-binary.ts          # resolveSsh/requireSsh — resolve ssh to an absolute path, per-OS install guidance
+│   ├── prompt.ts              # Thin wrappers over @inquirer/prompts
+│   ├── remote-keys.ts         # Remote ~/.ssh listing + key download
 │   └── commands/
-│       ├── setup.ts         # mssh setup
-│       ├── list.ts          # mssh / mssh config list
-│       ├── add.ts           # mssh config add
-│       ├── edit.ts          # mssh config edit
-│       ├── delete.ts        # mssh config delete
+│       ├── setup.ts           # mssh setup
+│       ├── list.ts            # mssh / mssh config list
+│       ├── add.ts             # mssh config add
+│       ├── edit.ts            # mssh config edit
+│       ├── delete.ts          # mssh config delete
 │       ├── change-password.ts # mssh change-password — re-key the encrypted config
-│       └── connect.ts       # mssh <host> — ssh passthrough
-├── tests/                   # bun:test unit tests, one file per src module
-├── .scripts/release.ts      # GitHub release automation (build, archive, checksum, upload)
-├── dist/                    # Build output (generated, gitignored)
-├── .env.example             # Settings template
-├── package.json             # Scripts, dependencies, six build targets
-├── tsconfig.json            # Strict TypeScript config
-├── bun.lock                 # Locked dependency tree
-├── AGENTS.md                # Agent instructions (this file; CLAUDE.md/GEMINI.md symlink here)
-├── README.md                # Project readme
-├── LICENSE                  # MIT license
-└── .gitignore               # Git ignore rules
+│       └── connect.ts         # mssh <host> — ssh passthrough
+├── tests/                     # bun:test unit tests, one file per src module
+├── .scripts/release.ts        # GitHub release automation (build, archive, checksum, upload)
+├── dist/                      # Build output (generated, gitignored)
+├── .env.example               # Settings template
+├── package.json               # Scripts, dependencies, six build targets
+├── tsconfig.json              # Strict TypeScript config
+├── bun.lock                   # Locked dependency tree
+├── AGENTS.md                  # Agent instructions (this file; CLAUDE.md/GEMINI.md symlink here)
+├── README.md                  # Project readme
+├── LICENSE                    # MIT license
+└── .gitignore                 # Git ignore rules
 ```
 
 ---

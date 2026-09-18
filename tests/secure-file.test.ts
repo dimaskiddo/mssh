@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { writeSecure, writeSecureAtomic, ensureSecureDir, type CommandRunner } from "../src/secure-file";
 
 function withScratchDir(fn: (dir: string) => void): void {
@@ -24,6 +24,9 @@ function withPlatform(platform: NodeJS.Platform, fn: () => void): void {
     Object.defineProperty(process, "platform", { value: original, configurable: true });
   }
 }
+
+// Same resolution lockdown() uses — never a bare, PATH-searched "icacls".
+const expectedIcaclsExe = `${process.env.SystemRoot || "C:\\Windows"}\\System32\\icacls.exe`;
 
 const okRunner: CommandRunner = () => ({ status: 0 });
 const failingStatusRunner: CommandRunner = () => ({ status: 1 });
@@ -63,6 +66,34 @@ test("writeSecure with the \"wx\" flag throws instead of overwriting a pre-exist
   });
 });
 
+test.skipIf(process.platform === "win32")(
+  "writeSecure corrects an existing file's mode to 0600, not just a newly created file's",
+  () => {
+    withScratchDir((dir) => {
+      const path = join(dir, "secret.txt");
+      writeFileSync(path, "old", { mode: 0o644 });
+      writeSecure(path, "new");
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readFileSync(path, "utf8")).toBe("new");
+    });
+  },
+);
+
+test("writeSecure locks down permissions before the payload is written, not after", () => {
+  withScratchDir((dir) => {
+    withPlatform("win32", () => {
+      const path = join(dir, "secret.txt");
+      let contentDuringLockdown: string | undefined;
+      const inspectingRunner: CommandRunner = () => {
+        contentDuringLockdown = readFileSync(path, "utf8");
+        return { status: 0 };
+      };
+      writeSecure(path, "payload", inspectingRunner);
+      expect(contentDuringLockdown).toBe("");
+    });
+  });
+});
+
 test("writeSecureAtomic replaces existing content", () => {
   withScratchDir((dir) => {
     const path = join(dir, "config");
@@ -95,6 +126,51 @@ test.skipIf(process.platform === "win32")(
     });
   },
 );
+
+test("writeSecureAtomic with exclusive:true creates a new file normally", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "config");
+    writeSecureAtomic(path, "sealed contents", undefined, true);
+    expect(readFileSync(path, "utf8")).toBe("sealed contents");
+    expect(readdirSync(dir)).toEqual(["config"]);
+  });
+});
+
+test("writeSecureAtomic with exclusive:true refuses to replace an existing file, and leaves no tmp behind", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "config");
+    writeSecure(path, "original");
+    expect(() => writeSecureAtomic(path, "replacement", undefined, true)).toThrow();
+    expect(readFileSync(path, "utf8")).toBe("original");
+    expect(readdirSync(dir)).toEqual(["config"]);
+  });
+});
+
+test("writeSecureAtomic's tmp filename embeds the current pid, for sweep.ts to parse", () => {
+  withScratchDir((dir) => {
+    withPlatform("win32", () => {
+      const path = join(dir, "config");
+      let seenDuringWrite: string[] = [];
+      const inspectingRunner: CommandRunner = () => {
+        seenDuringWrite = readdirSync(dir);
+        return { status: 0 };
+      };
+      writeSecureAtomic(path, "sealed contents", inspectingRunner);
+      const tmpName = seenDuringWrite.find((name) => name !== "config");
+      expect(tmpName).toContain(`.tmp-${process.pid}-`);
+    });
+  });
+});
+
+test("writeSecureAtomic does not leak a process 'exit' listener across calls", () => {
+  withScratchDir((dir) => {
+    const before = process.listenerCount("exit");
+    for (let i = 0; i < 5; i++) {
+      writeSecureAtomic(join(dir, `config${i}`), "contents");
+    }
+    expect(process.listenerCount("exit")).toBe(before);
+  });
+});
 
 test("ensureSecureDir creates the directory if missing and sets 0700 on POSIX", () => {
   withScratchDir((dir) => {
@@ -186,7 +262,7 @@ test("writeSecure passes the exact expected icacls argv to the injected runner",
         return { status: 0 };
       };
       writeSecure(path, "data", capturingRunner);
-      expect(capturedArgv).toEqual(["icacls", path, "/inheritance:r", "/grant:r", `${userInfo().username}:F`]);
+      expect(capturedArgv).toEqual([expectedIcaclsExe, path, "/inheritance:r", "/grant:r", `${userInfo().username}:F`]);
     });
   });
 });
@@ -201,7 +277,56 @@ test("ensureSecureDir passes the exact expected icacls argv to the injected runn
         return { status: 0 };
       };
       ensureSecureDir(target, capturingRunner);
-      expect(capturedArgv).toEqual(["icacls", target, "/inheritance:r", "/grant:r", `${userInfo().username}:F`]);
+      expect(capturedArgv).toEqual([expectedIcaclsExe, target, "/inheritance:r", "/grant:r", `${userInfo().username}:F`]);
+    });
+  });
+});
+
+test("icacls is resolved via %SystemRoot%\\System32, not a bare PATH-searched name", () => {
+  withScratchDir((dir) => {
+    withPlatform("win32", () => {
+      const original = process.env.SystemRoot;
+      process.env.SystemRoot = "D:\\CustomWindows";
+      try {
+        let capturedArgv: string[] | undefined;
+        const capturingRunner: CommandRunner = (argv) => {
+          capturedArgv = argv;
+          return { status: 0 };
+        };
+        writeSecure(join(dir, "secret.txt"), "data", capturingRunner);
+        expect(capturedArgv?.[0]).toBe("D:\\CustomWindows\\System32\\icacls.exe");
+      } finally {
+        if (original === undefined) delete process.env.SystemRoot;
+        else process.env.SystemRoot = original;
+      }
+    });
+  });
+});
+
+test("writeSecure's icacls grantee matches userInfo().username, mirroring add.ts's defaultUsername() fallback shape", () => {
+  // Same shape as tests/add.test.ts's defaultUsername test: userInfo()
+  // succeeds on this dev machine, so this pins the primary path; the
+  // USERDOMAIN\USERNAME fallback is reached only when userInfo() throws
+  // (containers with no passwd entry), which isn't reproducible here.
+  let expected: string;
+  try {
+    const name = userInfo().username;
+    expected = name;
+  } catch {
+    const domain = process.env.USERDOMAIN;
+    const name = process.env.USERNAME as string;
+    expected = domain ? `${domain}\\${name}` : name;
+  }
+
+  withScratchDir((dir) => {
+    withPlatform("win32", () => {
+      let capturedArgv: string[] | undefined;
+      const capturingRunner: CommandRunner = (argv) => {
+        capturedArgv = argv;
+        return { status: 0 };
+      };
+      writeSecure(join(dir, "secret.txt"), "data", capturingRunner);
+      expect(capturedArgv?.[capturedArgv.length - 1]).toBe(`${expected}:F`);
     });
   });
 });

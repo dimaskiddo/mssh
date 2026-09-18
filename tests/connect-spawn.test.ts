@@ -128,6 +128,13 @@ test("connectWithRaw rejects -F itself, so no caller (runConnect or the bare-mss
   expect(tempFilesIn(scratchRunDir).length).toBe(0);
 });
 
+test("connectWithRaw refuses a target matching no configured alias, instead of silently dropping its ProxyJump", async () => {
+  await expect(connectWithRaw(sealedRaw, ["typo-host"])).rejects.toThrow(
+    /"typo-host" is not a configured host alias/,
+  );
+  expect(tempFilesIn(scratchRunDir).length).toBe(0);
+});
+
 test("temp config contains only the target host, not other unrelated hosts", async () => {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
   try {

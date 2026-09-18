@@ -2,6 +2,7 @@
 // prints per-OS install guidance and exits. No knowledge of SSH config,
 // crypto, or anything else.
 import { isAbsolute } from "node:path";
+import { fatal } from "./exit";
 
 export type WhichFn = (cmd: string) => string | null;
 
@@ -44,6 +45,5 @@ export function installGuidance(platform: NodeJS.Platform): string {
 export function requireSsh(which: WhichFn = Bun.which): string {
   const path = resolveSsh(which);
   if (path !== undefined) return path;
-  console.error(installGuidance(process.platform));
-  process.exit(1);
+  fatal(installGuidance(process.platform));
 }

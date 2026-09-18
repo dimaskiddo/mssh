@@ -19,6 +19,8 @@ import {
   serialize,
   isValidFieldValue,
   isValidHostName,
+  hostHasName,
+  connectableNames,
   type Host,
 } from "../ssh-config";
 import { promptInput, promptSelect, promptConfirm } from "../prompt";
@@ -28,15 +30,23 @@ import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } fr
 import { tempConfigName } from "./connect";
 import { FIELD_LABELS, HOST_ALIAS_LABEL, KEY_PULL_LABEL, fieldPrompt } from "../field-labels";
 import { requireExistingConfig } from "./require-config";
+import { fatal } from "../exit";
 
 // Names index.ts dispatches on before ever reaching runConnect — a host with
 // one of these names would be silently unreachable via `mssh <name>`.
-const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-password"]);
+const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-password", "-h", "--help", "--version"]);
 
+// A hung remote in listRemoteKeys/downloadRemoteKey would otherwise block in
+// this sync syscall indefinitely — spawnSync itself doesn't process signals
+// while blocked, so SIGINT can't interrupt it either.
+const REMOTE_COMMAND_TIMEOUT_MS = 15_000;
+
+// @inquirer's input prompt cannot itself return a newline, so this can't
+// currently trigger — kept as defense in depth against a future input path
+// (piped stdin, a different prompt library) that isn't similarly constrained.
 function requireValidFieldValue(label: string, value: string): void {
   if (!isValidFieldValue(value)) {
-    console.error(`${label} cannot contain a newline.`);
-    process.exit(1);
+    fatal(`${label} cannot contain a newline.`);
   }
 }
 
@@ -62,7 +72,7 @@ export type NewHostFields = {
 
 export function buildNewHost(fields: NewHostFields): Host {
   return {
-    name: fields.name,
+    names: [fields.name],
     hostname: emptyToUndefined(fields.hostname),
     port: emptyToUndefined(fields.port),
     user: emptyToUndefined(fields.user),
@@ -78,7 +88,10 @@ export function buildNewHost(fields: NewHostFields): Host {
 // completely unchanged.
 export function tempConfigRunner(tempConfigPath: string, sshPath: string): RemoteRunner {
   return (sshTarget, remoteArgv) => {
-    const result = spawnSync(sshPath, ["-F", tempConfigPath, sshTarget, ...remoteArgv], { encoding: "buffer" });
+    const result = spawnSync(sshPath, ["-F", tempConfigPath, sshTarget, ...remoteArgv], {
+      encoding: "buffer",
+      timeout: REMOTE_COMMAND_TIMEOUT_MS,
+    });
     return {
       status: result.status,
       stdout: result.stdout ?? Buffer.alloc(0),
@@ -98,11 +111,15 @@ export function tempConfigRunner(tempConfigPath: string, sshPath: string): Remot
 // the bastion itself (DEFAULT_SSH_KEY_PATH), so it always takes precedence
 // here. Returns undefined if no keys are found, none is selected, or an
 // overwrite is declined; only requireSsh()'s own guidance-and-exit is fatal.
-async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
+async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<string | undefined> {
   const sshPath = requireSsh();
 
   ensureSecureDir(runDir());
   const tmpPath = join(runDir(), tempConfigName(process.pid, randomBytes(8).toString("hex")));
+  // listRemoteKeys and downloadRemoteKey are two separate ssh invocations to
+  // the same host; without a shared control connection, each re-runs the
+  // full auth handshake — twice the MFA prompts for one logical operation.
+  const controlPath = join(runDir(), `cm-${randomBytes(8).toString("hex")}`);
   const runner = tempConfigRunner(tmpPath, sshPath);
 
   // Safety net for a SIGTERM/SIGHUP arriving while suspended at a prompt
@@ -113,6 +130,11 @@ async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
     if (cleaned) return;
     cleaned = true;
     try {
+      spawnSync(sshPath, ["-S", controlPath, "-O", "exit", jumpAlias], { timeout: REMOTE_COMMAND_TIMEOUT_MS });
+    } catch {
+      // best-effort; ControlPersist's timeout reaps the socket regardless
+    }
+    try {
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
     } catch {
       // best-effort; nothing more useful to do at exit time
@@ -121,11 +143,20 @@ async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
   process.on("exit", cleanup);
 
   try {
-    writeSecure(tmpPath, serialize([jumpHost]), undefined, "wx");
+    const hostForTemp: Host = {
+      ...jumpHost,
+      extras: [
+        ...jumpHost.extras,
+        { key: "ControlMaster", value: "auto" },
+        { key: "ControlPath", value: `"${controlPath}"` },
+        { key: "ControlPersist", value: "30" },
+      ],
+    };
+    writeSecure(tmpPath, serialize([hostForTemp]), undefined, "wx");
 
-    const keys = listRemoteKeys(jumpHost.name, runner);
+    const keys = listRemoteKeys(jumpAlias, runner);
     if (keys.length === 0) {
-      console.log(`No keys found on ${jumpHost.name}.`);
+      console.log(`No keys found on ${jumpAlias}.`);
       return undefined;
     }
 
@@ -135,7 +166,7 @@ async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
     ]);
     if (selected === undefined) return undefined;
 
-    const localName = localKeyName(jumpHost.name, selected);
+    const localName = localKeyName(jumpAlias, selected);
     ensureSecureDir(keysDir());
     const localPath = join(keysDir(), localName);
 
@@ -144,7 +175,7 @@ async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
       if (!overwrite) return undefined;
     }
 
-    downloadRemoteKey(jumpHost.name, selected, localPath, runner);
+    downloadRemoteKey(jumpAlias, selected, localPath, runner);
 
     return localPath;
   } finally {
@@ -153,28 +184,23 @@ async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
 }
 
 export async function runAdd(): Promise<void> {
-  const { settings } = loadSettings();
+  const loaded = loadSettings();
+  const { settings } = loaded;
   const path = configPath(settings);
   requireExistingConfig(path);
-  const password = await resolvePassword({ forcePrompt: false });
+  const password = await resolvePassword(loaded, { forcePrompt: false });
 
   const existingHosts = loadHosts(path, password);
 
   const name = await promptInput(fieldPrompt(HOST_ALIAS_LABEL));
   if (!isValidHostName(name)) {
-    console.error("Host name must be non-empty and contain no whitespace.");
-    process.exit(1);
-    return;
+    fatal("Host name must be non-empty and contain no whitespace.");
   }
   if (RESERVED_HOST_NAMES.has(name)) {
-    console.error(`Host name "${name}" is reserved by mssh itself and would be unreachable; choose another name.`);
-    process.exit(1);
-    return;
+    fatal(`Host name "${name}" is reserved by mssh itself and would be unreachable; choose another name.`);
   }
-  if (existingHosts.some((h) => h.name === name)) {
-    console.error(`Host "${name}" already exists.`);
-    process.exit(1);
-    return;
+  if (existingHosts.some((h) => hostHasName(h, name))) {
+    fatal(`Host "${name}" already exists.`);
   }
 
   const hostname = await promptInput(fieldPrompt(FIELD_LABELS.hostname));
@@ -184,37 +210,37 @@ export async function runAdd(): Promise<void> {
   const user = await promptInput(fieldPrompt(FIELD_LABELS.user), { default: defaultUsername() });
   requireValidFieldValue(FIELD_LABELS.user, user);
 
-  let proxyJump: string | undefined;
-  let jumpHost: Host | undefined;
+  // Threads both the chosen Host block and the specific pattern the user
+  // picked (a multi-pattern jump host offers several) through to
+  // extractJumpHostKey and into the new host's ProxyJump value.
+  let jumpSelection: { host: Host; pattern: string } | undefined;
 
   const needsJumpHost = await promptConfirm(`Does this host require a ${FIELD_LABELS.proxyJump}?`, {
     default: false,
   });
   if (needsJumpHost) {
     const eligibleJumpHosts = hostsWithoutProxyJump(existingHosts);
-    if (eligibleJumpHosts.length === 0) {
-      console.error(
-        `No eligible ${FIELD_LABELS.proxyJump} exists yet: a jump host must itself have no ProxyJump. Add one first, then re-run 'mssh config add'.`,
-      );
-      process.exit(1);
-      return;
+    const eligiblePatterns = connectableNames(eligibleJumpHosts);
+    if (eligiblePatterns.length === 0) {
+      fatal(`No eligible ${FIELD_LABELS.proxyJump} exists yet: a jump host must itself have no ProxyJump. Add one first, then re-run 'mssh config add'.`);
     }
 
-    proxyJump = await promptSelect<string>(
+    const pattern = await promptSelect<string>(
       fieldPrompt(FIELD_LABELS.proxyJump),
-      eligibleJumpHosts.map((h) => ({ name: h.name, value: h.name })),
+      eligiblePatterns.map((n) => ({ name: n, value: n })),
     );
-    jumpHost = eligibleJumpHosts.find((h) => h.name === proxyJump);
+    const host = eligibleJumpHosts.find((h) => hostHasName(h, pattern));
+    if (host !== undefined) jumpSelection = { host, pattern };
   }
 
   let pulledKeyPath: string | undefined;
-  if (jumpHost !== undefined) {
+  if (jumpSelection !== undefined) {
     const wantsExtraction = await promptConfirm(
       `Pull a private key from the ${FIELD_LABELS.proxyJump} to authenticate to this host?`,
       { default: false },
     );
     if (wantsExtraction) {
-      pulledKeyPath = await extractJumpHostKey(jumpHost);
+      pulledKeyPath = await extractJumpHostKey(jumpSelection.host, jumpSelection.pattern);
     }
   }
 
@@ -229,10 +255,20 @@ export async function runAdd(): Promise<void> {
     requireValidFieldValue(FIELD_LABELS.identityFile, identityFile);
   }
 
-  const newHost = buildNewHost({ name, hostname, port, user, identityFile, proxyJump });
+  const newHost = buildNewHost({ name, hostname, port, user, identityFile, proxyJump: jumpSelection?.pattern });
 
   const updatedHosts = addHost(existingHosts, newHost);
-  saveHosts(path, updatedHosts, password);
+  try {
+    saveHosts(path, updatedHosts, password);
+  } catch (err) {
+    // pulledKeyPath was written to disk well before this point; a save
+    // failure here must not leave it unmentioned, or it sits as an orphan
+    // the user never knows to clean up (or reuse) by hand.
+    if (pulledKeyPath !== undefined) {
+      console.error(`Note: the key pulled from the jump host was saved at ${pulledKeyPath} even though the host was not added.`);
+    }
+    throw err;
+  }
 
   console.log(`Host '${name}' added.`);
 }

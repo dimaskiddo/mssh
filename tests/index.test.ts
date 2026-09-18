@@ -32,7 +32,7 @@ test("--help prints usage and exits 0 without prompting", () => {
   const result = runCli(["--help"]);
   expect(result.signal).toBeNull();
   expect(result.status).toBe(0);
-  expect(result.stdout).toContain("mssh — encrypted SSH config wrapper");
+  expect(result.stdout).toContain("MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper");
 });
 
 test("-h prints usage and exits 0", () => {
@@ -54,6 +54,35 @@ test("version subcommand prints the same banner as --version", () => {
   expect(result.signal).toBeNull();
   expect(result.status).toBe(0);
   expect(result.stdout).toBe(`${pkg.displayName} v${pkg.version}\nBy ${pkg.author}\n`);
+});
+
+test("--help with a trailing argument is rejected instead of printing usage", () => {
+  const result = runCli(["--help", "junk"]);
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Unexpected argument(s)");
+  expect(result.stdout).toBe("");
+});
+
+test("setup with a trailing argument is rejected", () => {
+  const result = runCli(["setup", "anything"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Unexpected argument(s): anything");
+});
+
+test("config list with a trailing argument is rejected before prompting", () => {
+  const result = runCli(["config", "list", "junk"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Unexpected argument(s): junk");
+});
+
+test("config edit with two names is rejected", () => {
+  const result = runCli(["config", "edit", "host1", "host2"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Unexpected argument(s): host2");
 });
 
 test("config with an unknown subcommand prints usage and exits 1", () => {
@@ -100,5 +129,18 @@ test("a truncated config is rejected before any password prompt", () => {
   expect(result.signal).toBeNull();
   expect(result.status).toBe(1);
   expect(result.stderr).toContain("empty or truncated");
+  expect(result.stdout).not.toContain("Password");
+});
+
+test("a config path that is a directory is rejected before any password prompt", () => {
+  const home = emptyHome();
+  const msshDir = join(home, ".mssh");
+  mkdirSync(msshDir);
+  mkdirSync(join(msshDir, "config"));
+
+  const result = runCli(["config", "list"], { HOME: home });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("is not a file (it may be a directory)");
   expect(result.stdout).not.toContain("Password");
 });

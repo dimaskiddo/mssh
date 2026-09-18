@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { isValidKeyFilename, listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../src/remote-keys";
+import { isValidHostName } from "../src/ssh-config";
 
 function withScratchDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "mssh-remote-keys-test-"));
@@ -77,6 +78,12 @@ test("localKeyName result never contains a path separator for any isValidKeyFile
     expect(result).not.toContain("/");
     expect(result).not.toContain("\\");
   }
+});
+
+test("localKeyName rejects a jumpAlias that would traverse out of keysDir(), even though isValidHostName permits it", () => {
+  expect(isValidHostName("../../../../tmp/evil")).toBe(true); // the Host alias this comes from allows it
+  expect(() => localKeyName("../../../../tmp/evil", "id_rsa")).toThrow();
+  expect(() => localKeyName("bastion/../../etc", "id_rsa")).toThrow();
 });
 
 function fakeOkRunner(stdout: string): RemoteRunner {

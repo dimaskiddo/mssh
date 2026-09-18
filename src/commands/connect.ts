@@ -20,8 +20,17 @@ import { configPath, loadSettings, resolvePassword, runDir } from "../app-config
 import { ensureSecureDir, writeSecure } from "../secure-file";
 import { loadRaw } from "../store";
 import { requireSsh } from "../ssh-binary";
-import { parse, serialize, withKeepAlive, hostsForTarget, EXECUTING_DIRECTIVES, type Host } from "../ssh-config";
+import {
+  parse,
+  serialize,
+  withKeepAlive,
+  hostsForTarget,
+  normalizeDirectiveKey,
+  REFUSED_DIRECTIVES,
+  type Host,
+} from "../ssh-config";
 import { requireExistingConfig } from "./require-config";
+import { fatal } from "../exit";
 
 // Pure: does this platform get SIGTERM/SIGHUP forwarding? Windows doesn't
 // support SIGTERM semantics the same way, and SIGHUP there kills the process
@@ -41,25 +50,37 @@ export function tempConfigName(pid: number, randomSuffix: string): string {
 }
 
 // ssh lets -F redirect the connection entirely, and an -o naming any
-// EXECUTING_DIRECTIVES option make ssh run an arbitrary program — both would
-// subvert the temp config we just wrote, so both are refused. Handles the
-// attached (`-Fpath`, `-oProxyCommand=...`) and separate (`-F path`,
-// `-o ProxyCommand=...`) forms. Same deny-list ssh-config.ts enforces on the
-// config-file side, imported rather than duplicated so the two surfaces
-// cannot drift apart.
+// REFUSED_DIRECTIVES option make ssh run an arbitrary program or pull in an
+// arbitrary file — both would subvert the temp config we just wrote, so both
+// are refused. Handles bundled short flags (`-4F path`, `-4oProxyCommand=id`)
+// and an -o value separated by whitespace or a quoted name, not just `=`.
+// Same deny-list ssh-config.ts enforces on the config-file side, imported
+// rather than duplicated so the two surfaces cannot drift apart.
+//
+// Not a full getopt: an unrelated flag's separate value (e.g. `-p 2222`) is
+// never inspected, so a value-taking flag other than -F/-o can still swallow
+// the next token unnoticed. That's an accepted ceiling, not a gap in this
+// guard — it fails closed on the two flags that can actually redirect ssh.
 export function rejectedFlags(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
+    if (!/^-[A-Za-z0-9]*[Fo]/.test(arg)) continue;
 
-    if (arg === "-F" || (arg.startsWith("-F") && arg !== "-F")) return arg;
+    if (/^-[A-Za-z0-9]*F/.test(arg)) return arg;
 
-    const inlineValue = arg.startsWith("-o") && arg.length > 2 ? arg.slice(2) : undefined;
-    const separateValue = arg === "-o" ? argv[i + 1] : undefined;
-    const optionValue = inlineValue ?? separateValue;
-    const optionName = optionValue?.split("=")[0]?.trim().toLowerCase();
-    if (optionName !== undefined && EXECUTING_DIRECTIVES.has(optionName)) {
-      return arg;
-    }
+    const after = arg.slice(arg.indexOf("o") + 1);
+    const optionValue = after !== "" ? after : argv[i + 1];
+    const parts = optionValue?.split(/[\s=]/);
+    const rawName = parts?.[0];
+    const name = rawName === undefined ? undefined : normalizeDirectiveKey(rawName);
+    if (name === undefined) continue;
+    const lowerName = name.toLowerCase();
+    if (!REFUSED_DIRECTIVES.has(lowerName)) continue;
+    // The only REFUSED_DIRECTIVES member that hardens rather than executes:
+    // =no disables LocalCommand outright, so it carries no more risk than
+    // omitting the flag. Same allowance as ssh-config.ts's parse() side.
+    if (lowerName === "permitlocalcommand" && parts?.[1]?.toLowerCase() === "no") continue;
+    return arg;
   }
   return undefined;
 }
@@ -86,7 +107,7 @@ export type SpawnFn = (command: string, args: string[], options: { stdio: "inher
 // configured aliases is enough: a token that is not an alias selects nothing,
 // and the worst case is including a host whose name you typed yourself.
 export function argvTargets(argv: string[], hosts: Host[]): string[] {
-  const names = new Set(hosts.map((h) => h.name));
+  const names = new Set(hosts.flatMap((h) => h.names));
   return argv.filter((arg) => names.has(arg));
 }
 
@@ -95,7 +116,9 @@ export function argvTargets(argv: string[], hosts: Host[]): string[] {
 // must not prompt or decrypt a second time. rejectedFlags()/requireSsh()
 // live here, not in the caller, so every path that writes plaintext to disk
 // is guarded the same way regardless of how it got the raw config.
-export async function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = spawn): Promise<void> {
+// `hosts`, when passed, is used instead of re-parsing `raw` — the picker
+// already parsed it once to build its choice list.
+export async function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = spawn, hosts?: Host[]): Promise<void> {
   const rejected = rejectedFlags(argv);
   if (rejected !== undefined) {
     throw new Error(`refusing to pass ${rejected} through: it would override the managed config`);
@@ -124,8 +147,23 @@ export async function connectWithRaw(raw: string, argv: string[], spawnFn: Spawn
   // chain), not the whole decrypted config: this file sits in plaintext on
   // disk for the life of the session, and the tool's whole premise is that
   // hosts you're not touching stay encrypted at rest.
-  const allHosts = parse(raw);
-  const scoped = serialize(withKeepAlive(hostsForTarget(allHosts, argvTargets(argv, allHosts))));
+  const allHosts = hosts ?? parse(raw);
+  const targets = argvTargets(argv, allHosts);
+
+  // A target matching no configured alias yields an empty temp config: no
+  // HostName, no IdentityFile, and no ProxyJump — ssh falls back to plain DNS
+  // resolution and any bastion is skipped without a word. Heuristic, not full
+  // getopt: it names the first token that isn't a flag, which can misname a
+  // value-taking flag's argument (e.g. `-p 2222` when 2222 isn't itself the
+  // typo). Good enough to turn a silent bypass into a loud one.
+  if (targets.length === 0) {
+    const candidate = argv.find((arg) => !arg.startsWith("-"));
+    if (candidate !== undefined) {
+      throw new Error(`"${candidate}" is not a configured host alias — connecting would silently drop its ProxyJump`);
+    }
+  }
+
+  const scoped = serialize(withKeepAlive(hostsForTarget(allHosts, targets)));
 
   // "wx" so a pre-existing file at this path is an error, never silently
   // written through. Do not relax to "w".
@@ -152,16 +190,15 @@ export async function connectWithRaw(raw: string, argv: string[], spawnFn: Spawn
   // here can't race the ProxyJump re-exec case.
   child.on("error", (err) => {
     cleanup();
-    console.error(`failed to run ssh: ${err.message}`);
-    process.exit(1);
+    fatal(`failed to run ssh: ${err.message}`);
   });
 }
 
 export async function runConnect(argv: string[], spawnFn: SpawnFn = spawn): Promise<void> {
-  const { settings } = loadSettings();
-  const path = configPath(settings);
+  const loaded = loadSettings();
+  const path = configPath(loaded.settings);
   requireExistingConfig(path);
-  const password = await resolvePassword({ forcePrompt: false });
+  const password = await resolvePassword(loaded, { forcePrompt: false });
   const raw = loadRaw(path, password);
 
   await connectWithRaw(raw, argv, spawnFn);

@@ -52,6 +52,48 @@ test("rejectedFlags passes through a harmless -o ServerAliveInterval", () => {
   expect(rejectedFlags(["myhost", "-o", "ServerAliveInterval=30"])).toBeUndefined();
 });
 
+test("rejectedFlags passes through -p and -J, whose values are never inspected", () => {
+  expect(rejectedFlags(["myhost", "-p", "2222"])).toBeUndefined();
+  expect(rejectedFlags(["myhost", "-J", "bastion"])).toBeUndefined();
+});
+
+test("rejectedFlags rejects a bundled short flag ending in F", () => {
+  expect(rejectedFlags(["myhost", "-4F", "/tmp/other"])).toBe("-4F");
+});
+
+test("rejectedFlags rejects a bundled short flag carrying -o", () => {
+  expect(rejectedFlags(["myhost", "-4oProxyCommand=id"])).toBe("-4oProxyCommand=id");
+});
+
+test("rejectedFlags rejects a whitespace-separated -o value, not just the =-form", () => {
+  expect(rejectedFlags(["myhost", "-o", "ProxyCommand id"])).toBe("-o");
+});
+
+test("rejectedFlags rejects a tab-separated -o value", () => {
+  expect(rejectedFlags(["myhost", "-o", "ProxyCommand\tid"])).toBe("-o");
+});
+
+test("rejectedFlags rejects a quoted directive name inside -o's value", () => {
+  expect(rejectedFlags(["myhost", "-o", '"ProxyCommand"=id'])).toBe("-o");
+});
+
+test("rejectedFlags rejects -o Include, which redirects into an arbitrary file", () => {
+  expect(rejectedFlags(["myhost", "-o", "Include=/tmp/evil"])).toBe("-o");
+});
+
+test("rejectedFlags passes through -o PermitLocalCommand=no, a hardening flag", () => {
+  expect(rejectedFlags(["myhost", "-o", "PermitLocalCommand=no"])).toBeUndefined();
+  expect(rejectedFlags(["myhost", "-opermitlocalcommand=NO"])).toBeUndefined();
+});
+
+test("rejectedFlags still rejects -o PermitLocalCommand=yes, which enables LocalCommand", () => {
+  expect(rejectedFlags(["myhost", "-o", "PermitLocalCommand=yes"])).toBe("-o");
+});
+
+test("rejectedFlags still rejects a bare -o PermitLocalCommand with no value", () => {
+  expect(rejectedFlags(["myhost", "-o", "PermitLocalCommand"])).toBe("-o");
+});
+
 test("childExitCode returns the child's exit code when it exited normally", () => {
   expect(childExitCode(0, null)).toBe(0);
   expect(childExitCode(3, null)).toBe(3);

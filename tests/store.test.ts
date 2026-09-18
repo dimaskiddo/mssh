@@ -1,10 +1,11 @@
-import { test, expect } from "bun:test";
+import { test, expect, mock } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { loadRaw, loadHosts, saveHosts } from "../src/store";
 import { parse, withKeepAlive } from "../src/ssh-config";
 import type { Host } from "../src/ssh-config";
+import * as realCrypto from "../src/crypto";
 
 function withScratchDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "mssh-store-test-"));
@@ -103,10 +104,66 @@ test("loadRaw on a nonexistent file throws a distinct 'no config found' error me
   });
 });
 
+test("saveHosts with exclusive:true refuses to overwrite an existing config", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    saveHosts(path, parse(SAMPLE_TEXT), "correct-horse", { exclusive: true });
+
+    expect(() => saveHosts(path, [], "different-password", { exclusive: true })).toThrow();
+
+    const loaded = loadHosts(path, "correct-horse");
+    expect(loaded).toEqual(withKeepAlive(parse(SAMPLE_TEXT)));
+  });
+});
+
+test("loadRaw reports a scrypt resource error distinctly instead of folding it into wrong password", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    writeFileSync(path, Buffer.from("irrelevant, open() is mocked below"));
+
+    mock.module("../src/crypto", () => ({
+      ...realCrypto,
+      open: () => {
+        const err = new Error("Cannot allocate memory") as NodeJS.ErrnoException;
+        err.code = "ERR_CRYPTO_OUT_OF_MEMORY";
+        throw err;
+      },
+    }));
+
+    try {
+      expect(() => loadRaw(path, "any-password")).toThrow(/resource error, not a wrong password/);
+    } finally {
+      // mock.module() replaces the module in Bun's registry for the rest of the
+      // test run — restore it so later files/tests see the real crypto module.
+      mock.module("../src/crypto", () => realCrypto);
+    }
+  });
+});
+
+test("loadRaw reports an internal TypeError distinctly instead of folding it into wrong password", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    writeFileSync(path, Buffer.from("irrelevant, open() is mocked below"));
+
+    mock.module("../src/crypto", () => ({
+      ...realCrypto,
+      open: () => {
+        throw new TypeError("payload.subarray is not a function");
+      },
+    }));
+
+    try {
+      expect(() => loadRaw(path, "any-password")).toThrow(/internal error, not a wrong password/);
+    } finally {
+      mock.module("../src/crypto", () => realCrypto);
+    }
+  });
+});
+
 test("saveHosts writes an encrypted file, not plaintext of the host data", () => {
   withScratchDir((dir) => {
     const path = join(dir, "ssh_config.enc");
-    const hosts: Host[] = [{ name: "supersecrethostname", hostname: "10.0.0.99", extras: [] }];
+    const hosts: Host[] = [{ names: ["supersecrethostname"], hostname: "10.0.0.99", extras: [] }];
 
     saveHosts(path, hosts, "correct-horse");
     const raw = readFileSync(path);

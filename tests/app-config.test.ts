@@ -1,7 +1,8 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { homedir, tmpdir } from "node:os";
+import * as nodeOs from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import {
   expandHome,
   toDisplayPath,
@@ -46,6 +47,10 @@ test("expandHome does not expand ~ that isn't at the start of the path", () => {
   expect(expandHome("/foo/~/bar")).toBe("/foo/~/bar");
 });
 
+test("expandHome expands a leading ~\\ (Windows-style) to a path under the home directory", () => {
+  expect(expandHome("~\\.ssh\\id_rsa")).toBe(join(homedir(), ".ssh\\id_rsa"));
+});
+
 test("toDisplayPath renders a home-relative absolute path back to ~ form", () => {
   expect(toDisplayPath(join(homedir(), ".mssh/.env"))).toBe("~/.mssh/.env");
   expect(toDisplayPath(homedir())).toBe("~");
@@ -53,6 +58,44 @@ test("toDisplayPath renders a home-relative absolute path back to ~ form", () =>
 
 test("toDisplayPath leaves a path outside the home directory untouched", () => {
   expect(toDisplayPath("/etc/ssh/config")).toBe("/etc/ssh/config");
+});
+
+// homeDir() (app-config.ts) tries os.homedir() before process.env.HOME, and
+// Bun's homedir() does not honor a HOME set after startup — so redirecting it
+// means spying on the node:os module namespace, exploiting the same
+// live-binding behavior used for node:fs's writeSync in ssh-binary.test.ts.
+function withHome(home: string, fn: () => void): void {
+  const spy = spyOn(nodeOs, "homedir").mockReturnValue(home);
+  try {
+    fn();
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+function withPlatform(platform: NodeJS.Platform, fn: () => void): void {
+  const original = process.platform;
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  try {
+    fn();
+  } finally {
+    Object.defineProperty(process, "platform", { value: original, configurable: true });
+  }
+}
+
+test("toDisplayPath does not double the separator when home is the filesystem root", () => {
+  withHome("/", () => {
+    expect(toDisplayPath("/etc/ssh/config")).toBe("~/etc/ssh/config");
+    expect(toDisplayPath("/")).toBe("~");
+  });
+});
+
+test("toDisplayPath compares case-insensitively on Windows, where paths are case-insensitive", () => {
+  withHome("/Users/Bob", () => {
+    withPlatform("win32", () => {
+      expect(toDisplayPath("/users/bob/.mssh/.env")).toBe("~/.mssh/.env");
+    });
+  });
 });
 
 test("parseEnvText parses KEY=value lines, ignoring blanks and comments", () => {
@@ -75,6 +118,25 @@ test("parseEnvText trims surrounding whitespace around key and value", () => {
 
 test("parseEnvText ignores lines with no = separator", () => {
   expect(parseEnvText("not-a-directive\nMSSH_PASSWORD=hunter2")).toEqual({ MSSH_PASSWORD: "hunter2" });
+});
+
+test("parseEnvText strips surrounding double or single quotes from the value", () => {
+  expect(parseEnvText('MSSH_PASSWORD="my pass"')).toEqual({ MSSH_PASSWORD: "my pass" });
+  expect(parseEnvText("MSSH_PASSWORD='my pass'")).toEqual({ MSSH_PASSWORD: "my pass" });
+});
+
+test("parseEnvText handles an export prefix on the key", () => {
+  expect(parseEnvText("export MSSH_PASSWORD=hunter2")).toEqual({ MSSH_PASSWORD: "hunter2" });
+});
+
+test("parseEnvText strips an inline comment on an unquoted value", () => {
+  expect(parseEnvText("MSSH_PASSWORD=hunter2 # inline note")).toEqual({ MSSH_PASSWORD: "hunter2" });
+});
+
+test("parseEnvText does not treat a quoted value's internal # as a comment", () => {
+  expect(parseEnvText('MSSH_PASSWORD="hunter2 # not a comment"')).toEqual({
+    MSSH_PASSWORD: "hunter2 # not a comment",
+  });
 });
 
 test("pickSettings keeps only known keys and drops empty values", () => {
@@ -103,6 +165,24 @@ test("pickSettings returns an empty object for non-object input", () => {
   expect(pickSettings(null)).toEqual({});
   expect(pickSettings("not an object")).toEqual({});
   expect(pickSettings(undefined)).toEqual({});
+});
+
+test("pickSettings throws loudly on a non-string value instead of silently discarding it", () => {
+  expect(() => pickSettings({ MSSH_PASSWORD: 12345 })).toThrow(/MSSH_PASSWORD must be a string/);
+});
+
+test("pickSettings throws loudly on array-shaped input (a stray multi-document YAML)", () => {
+  expect(() => pickSettings([{ MSSH_PASSWORD: "hunter2" }])).toThrow(/expected a single mapping/);
+});
+
+test("pickSettings rejects a relative MSSH_CONFIG_PATH", () => {
+  expect(() => pickSettings({ MSSH_CONFIG_PATH: "relative/config" })).toThrow(/must be an absolute path/);
+});
+
+test("pickSettings accepts a ~-relative MSSH_CONFIG_PATH since expandHome resolves it to absolute", () => {
+  expect(pickSettings({ MSSH_CONFIG_PATH: "~/elsewhere/ssh_config.enc" })).toEqual({
+    MSSH_CONFIG_PATH: join(homedir(), "elsewhere/ssh_config.enc"),
+  });
 });
 
 test("configPath uses the override when MSSH_CONFIG_PATH is set", () => {
@@ -177,6 +257,27 @@ test("loadSettingsFrom throws a sanitized error on malformed config.yaml, never 
     const message = (thrown as Error).message;
     expect(message).toContain("malformed config.yaml");
     expect(message).not.toContain("hunter2");
+  });
+});
+
+test("loadSettingsFrom propagates a raw I/O error on config.yaml distinctly from a YAML syntax error", () => {
+  withScratchDir((dir) => {
+    // A directory at the yaml path: existsSync is true, but readFileSync
+    // throws EISDIR — must not be relabeled "malformed config.yaml".
+    const yamlPath = join(dir, "config.yaml");
+    const envPath = join(dir, ".env");
+    mkdirSync(yamlPath);
+
+    let thrown: unknown;
+    try {
+      loadSettingsFrom(yamlPath, envPath);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as NodeJS.ErrnoException).code).toBe("EISDIR");
+    expect((thrown as Error).message).not.toContain("malformed config.yaml");
   });
 });
 

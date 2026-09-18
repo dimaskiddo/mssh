@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, renameSync, statSync } from "node:fs";
+import { existsSync, readFileSync, linkSync, unlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { promptPassword } from "./prompt";
 import { isWindows } from "./secure-file";
 import { fieldPrompt, PASSWORD_LABEL } from "./field-labels";
@@ -70,7 +70,7 @@ export function configPath(settings: Settings): string {
 // Only the leading form is special-cased, matching shell behavior.
 export function expandHome(inputPath: string): string {
   if (inputPath === "~") return homeDir();
-  if (inputPath.startsWith("~/")) return join(homeDir(), inputPath.slice(2));
+  if (inputPath.startsWith("~/") || inputPath.startsWith("~\\")) return join(homeDir(), inputPath.slice(2));
   return inputPath;
 }
 
@@ -85,11 +85,24 @@ export function toDisplayPath(absolutePath: string): string {
   } catch {
     return absolutePath;
   }
-  if (absolutePath === home) return "~";
-  if (absolutePath.startsWith(home + sep)) return "~" + absolutePath.slice(home.length);
+
+  // Windows paths are case-insensitive; comparing case-sensitively can miss
+  // a home directory reported in different casing than the path being shown.
+  const a = isWindows() ? absolutePath.toLowerCase() : absolutePath;
+  const h = isWindows() ? home.toLowerCase() : home;
+
+  if (a === h) return "~";
+
+  // home may already end in sep (root, "/"); appending an unconditional sep
+  // there doubles it and the prefix check below never matches.
+  const homeWithSep = h.endsWith(sep) ? h : h + sep;
+  if (a.startsWith(homeWithSep)) return "~" + sep + absolutePath.slice(homeWithSep.length);
   return absolutePath;
 }
 
+// Matches dotenv/docker-compose/direnv conventions: without quote-stripping,
+// MSSH_PASSWORD="my pass" keeps the quotes and derives a key from the wrong
+// 9-character string, surfacing as "wrong password" with no indication why.
 export function parseEnvText(text: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const rawLine of text.split("\n")) {
@@ -99,8 +112,17 @@ export function parseEnvText(text: string): Record<string, string> {
     const eqIndex = line.indexOf("=");
     if (eqIndex === -1) continue;
 
-    const key = line.slice(0, eqIndex).trim();
-    const value = line.slice(eqIndex + 1).trim();
+    const key = line.slice(0, eqIndex).trim().replace(/^export\s+/i, "");
+    let value = line.slice(eqIndex + 1).trim();
+
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.length >= 2 && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    } else {
+      const commentIndex = value.search(/\s#/);
+      if (commentIndex !== -1) value = value.slice(0, commentIndex).trim();
+    }
+
     result[key] = value;
   }
   return result;
@@ -108,13 +130,29 @@ export function parseEnvText(text: string): Record<string, string> {
 
 export function pickSettings(raw: unknown): Settings {
   const settings: Settings = {};
-  if (!raw || typeof raw !== "object") return settings;
+  if (raw === null || raw === undefined || typeof raw !== "object") return settings;
+  // A multi-document YAML file parses to an array, which the object check
+  // above would otherwise accept and silently yield {} for every key.
+  if (Array.isArray(raw)) {
+    throw new Error("malformed settings: expected a single mapping, got a list — check for a stray YAML document separator");
+  }
 
   const record = raw as Record<string, unknown>;
   for (const key of SETTINGS_KEYS) {
+    if (!(key in record)) continue;
     const value = record[key];
-    if (typeof value !== "string" || value === "") continue;
-    settings[key] = PATH_KEYS.has(key) ? expandHome(value) : value;
+    if (value === undefined || value === null) continue;
+    // A present-but-wrong-typed value (e.g. an all-digit password parsed as
+    // a YAML number) must fail loudly rather than silently discard it.
+    if (typeof value !== "string") {
+      throw new Error(`malformed settings: ${key} must be a string, got ${typeof value}`);
+    }
+    if (value === "") continue;
+    const resolved = PATH_KEYS.has(key) ? expandHome(value) : value;
+    if (key === "MSSH_CONFIG_PATH" && !isAbsolute(resolved)) {
+      throw new Error(`MSSH_CONFIG_PATH must be an absolute path, got "${value}"`);
+    }
+    settings[key] = resolved;
   }
   return settings;
 }
@@ -126,7 +164,7 @@ export function selectStoredPassword(settings: Settings, forcePrompt: boolean): 
   return settings.MSSH_PASSWORD;
 }
 
-type LoadedSettings = {
+export type LoadedSettings = {
   settings: Settings;
   sourcePath: string | undefined; // which file was actually read, for the permission warning
 };
@@ -137,9 +175,13 @@ type LoadedSettings = {
 // don't work for redirecting it in tests).
 export function loadSettingsFrom(yamlPath: string, envPath: string): LoadedSettings {
   if (existsSync(yamlPath)) {
+    // readFileSync stays outside the try: an I/O error (EACCES, EISDIR) is
+    // not a syntax error, and mislabeling it sends the user chasing a
+    // nonexistent YAML typo instead of a permissions fix.
+    const text = readFileSync(yamlPath, "utf8");
     let parsed: unknown;
     try {
-      parsed = Bun.YAML.parse(readFileSync(yamlPath, "utf8"));
+      parsed = Bun.YAML.parse(text);
     } catch {
       // Never surface the parser's own error: it can quote the offending source
       // line, which may contain a secret.
@@ -164,34 +206,60 @@ export function loadSettings(): LoadedSettings {
 // `config`. Refuses to touch anything when both exist: the current file is
 // authoritative and the legacy one may be a deliberate backup, so clobbering
 // it could destroy the only copy of a config whose password the user still
-// has. A rename, not a re-encrypt — the ciphertext is never read, no password
-// needed, and the existing mode carries over, which is why this bypasses
-// secure-file.ts (that module owns writes of new data; there is none here).
+// has. A move, not a re-encrypt — the ciphertext is never read, no password
+// needed, and the existing mode carries over silently (no warning is raised
+// even if it's weaker than 0600 — warnIfNotPrivate only ever inspects the
+// settings file), which is why this bypasses secure-file.ts (that module
+// owns writes of new data; there is none here).
+//
+// linkSync+unlinkSync rather than renameSync: rename(2) replaces an existing
+// destination silently, so the existsSync check above is the only guard —
+// and this runs on every single invocation (index.ts), maximizing the race
+// window. link() fails with EEXIST if currentPath already exists (a
+// concurrent `mssh setup` between the check and here), closing the TOCTOU
+// instead of one process's legacy file clobbering the other's fresh config.
 // Returns whether a move happened, for the caller's notice.
 export function migrateLegacyConfigFrom(legacyPath: string, currentPath: string): boolean {
   if (!existsSync(legacyPath) || existsSync(currentPath)) return false;
-  renameSync(legacyPath, currentPath);
+  try {
+    linkSync(legacyPath, currentPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
+  unlinkSync(legacyPath);
   return true;
 }
 
-function warnIfNotPrivate(sourcePath: string): void {
-  if (isWindows()) return; // POSIX mode bits are meaningless on Windows
-
+// group/other bits only — 0400 is stricter than 0600 and must not warn, so
+// this checks what's readable/writable to others, not equality to 0600.
+function warnIfWorldOrGroupAccessible(path: string, minimumMode: string): void {
   try {
-    const mode = statSync(sourcePath).mode & 0o777;
-    if (mode !== 0o600) {
-      console.error(`Warning: ${toDisplayPath(sourcePath)} is not readable-only by you (mode should be 0600)`);
+    const mode = statSync(path).mode & 0o777;
+    if (mode & 0o077) {
+      console.error(`Warning: ${toDisplayPath(path)} is accessible by others (mode ${mode.toString(8)}; should be ${minimumMode} or stricter)`);
     }
   } catch {
     // advisory only; a stat failure here is not this function's problem
   }
 }
 
+function warnIfNotPrivate(sourcePath: string): void {
+  if (isWindows()) return; // POSIX mode bits are meaningless on Windows
+
+  warnIfWorldOrGroupAccessible(sourcePath, "0600");
+  warnIfWorldOrGroupAccessible(dirname(sourcePath), "0700");
+}
+
 // Single point of password routing:
 // - forcePrompt: true  -> always hidden-prompt, MSSH_PASSWORD is never read
 // - forcePrompt: false -> use MSSH_PASSWORD if set, else hidden-prompt
-export async function resolvePassword(opts: { forcePrompt: boolean }): Promise<string> {
-  const { settings, sourcePath } = loadSettings();
+// Takes the caller's own loadSettings() result rather than reloading: every
+// caller already has it for configPath()/etc, and a second independent read
+// could in principle disagree with the first (a config.yaml edited between
+// the two calls).
+export async function resolvePassword(loaded: LoadedSettings, opts: { forcePrompt: boolean }): Promise<string> {
+  const { settings, sourcePath } = loaded;
   const stored = selectStoredPassword(settings, opts.forcePrompt);
 
   if (stored !== undefined) {

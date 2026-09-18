@@ -8,7 +8,7 @@
 
 *   **🔒 Encrypted at Rest:** AES-256-GCM with a fresh salt and IV per save, keyed through a deliberately slow, memory-hard KDF at OWASP's minimum recommended cost. Your SSH config is never plaintext on disk.
 *   **🎭 Drop-in Passthrough:** `mssh myserver -L 8080:localhost:80` forwards flags straight to `ssh` — no wrapper-specific syntax to learn. `-F` and any `-o` option that makes ssh execute a program are rejected since they'd bypass the managed config.
-*   **🔑 Always-Prompt Listing:** `mssh` and `mssh config list` always ask for the password, even if `MSSH_PASSWORD` is set, so a stray env var can't silently dump your host inventory.
+*   **🔑 Always-Prompt Listing:** `mssh` and `mssh config list` always ask for the password, even if `MSSH_PASSWORD` is stored in `config.yaml`/`.env`, so a stray setting can't silently dump your host inventory.
 *   **🦘 ProxyJump-Aware:** Jump hosts resolve correctly even though OpenSSH re-executes itself as a child process to handle them.
 *   **📥 Remote Key Extraction:** `mssh config add` can reach a new host directly and pull a private key from its `~/.ssh` into your local key store.
 *   **🧹 Zero-Trace Sessions:** Decrypted data lives only for the life of the connection, locked to your user account, and is destroyed when the session ends.
@@ -42,6 +42,8 @@ The ephemeral config has to outlive the initial handoff to `ssh`: OpenSSH resolv
 ### 📋 Prerequisites
 
 mssh wraps the system's OpenSSH client. It does **not** bundle or ship its own SSH implementation — you must have `ssh` installed and on your `PATH`.
+
+**Minimum version: OpenSSH 8.7.** mssh quotes and backslash-escapes any field value containing a space, `#`, quote, or backslash (e.g. a Windows path or a path with spaces) when saving. OpenSSH's `ssh_config` parser only understands that escape syntax as of 8.7 (released August 2021) — an older client fails to parse such a value correctly.
 
 *   **Windows:** run as Administrator:
     ```powershell
@@ -165,6 +167,11 @@ Recognized settings (in either `config.yaml` or `.env`):
 - Other local users reading the decrypted config mid-session — the run directory and the decrypted temp file are both restricted to your user account.
 - Offline brute-force of a stolen `config` — key derivation is deliberately slow and memory-hard, making guessing attempts costly.
 - A hand-imported or hand-edited config turning `mssh <host>` into a launcher for arbitrary programs — directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match exec`, `KnownHostsCommand`, etc.) are dropped on load and refused on save. `ssh` itself is always invoked by its resolved absolute path, never a bare `PATH`-searched name, so a shadowing binary earlier on `PATH` can't run in its place.
+
+### Does not protect against
+
+- **Key material is never wiped from memory.** The derived encryption key and the master password both live as long-lived `Buffer`/`string` values for the duration of a command, and the decrypted config is held as a JS string, which is immutable and cannot be zeroed. A process memory dump or swapped page during that window can expose them. This is a limitation of using JS strings for secrets, not something a partial fix would meaningfully close.
+- **The encrypted format's version byte is unauthenticated.** The on-disk layout is `version‖salt‖iv‖tag‖ciphertext`, but only the ciphertext is covered by the AEAD tag — the version byte itself is not bound in as associated data. Tampering with it today just changes which error path a corrupted file takes; it becomes a real concern only if a second format version is ever introduced, at which point the version byte must be authenticated (e.g. via `setAAD`) to prevent a downgrade attack.
 
 ---
 

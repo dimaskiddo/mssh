@@ -6,8 +6,9 @@ import { loadRaw, saveHosts } from "../store";
 import { parse } from "../ssh-config";
 import { promptPassword } from "../prompt";
 import { fieldPrompt, PASSWORD_SET_LABEL, PASSWORD_CONFIRM_LABEL } from "../field-labels";
-import { passwordsMatch } from "./setup";
+import { passwordsMatch, isValidPassword } from "./setup";
 import { requireExistingConfig } from "./require-config";
+import { fatal } from "../exit";
 
 // Verifies currentPassword against the file on disk, then re-seals it under
 // newPassword. No prompting, no process.exit — the fs/crypto core, testable
@@ -22,7 +23,8 @@ export async function changePassword(path: string, currentPassword: string, newP
 }
 
 export async function runChangePassword(): Promise<void> {
-  const { settings, sourcePath } = loadSettings();
+  const loaded = loadSettings();
+  const { settings, sourcePath } = loaded;
   const path = configPath(settings);
   requireExistingConfig(path);
 
@@ -30,23 +32,32 @@ export async function runChangePassword(): Promise<void> {
 
   // forcePrompt: true — a stray MSSH_PASSWORD in the environment must not let
   // someone at your terminal re-key your config without entering it.
-  const current = await resolvePassword({ forcePrompt: true });
+  const current = await resolvePassword(loaded, { forcePrompt: true });
+
+  // Verify current before collecting the new password twice — otherwise a
+  // wrong current password is only discovered after two more prompts.
+  try {
+    loadRaw(path, current);
+  } catch (err) {
+    fatal(err instanceof Error ? err.message : String(err));
+  }
 
   const next = await promptPassword(fieldPrompt(PASSWORD_SET_LABEL));
+
+  if (!isValidPassword(next)) {
+    fatal("Password must not be empty.");
+  }
+
   const confirm = await promptPassword(fieldPrompt(PASSWORD_CONFIRM_LABEL));
 
   if (!passwordsMatch(next, confirm)) {
-    console.error("Passwords do not match.");
-    process.exit(1);
-    return;
+    fatal("Passwords do not match.");
   }
 
   try {
     await changePassword(path, current, next);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-    return;
+    fatal(err instanceof Error ? err.message : String(err));
   }
 
   console.log(`Config re-keyed at ${path}.`);

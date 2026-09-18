@@ -17,7 +17,7 @@ test("buildNewHost keeps required name and treats blank optional fields as undef
   });
 
   expect(host).toEqual({
-    name: "web1",
+    names: ["web1"],
     hostname: undefined,
     port: undefined,
     user: undefined,
@@ -38,7 +38,7 @@ test("buildNewHost fills in all provided fields", () => {
   });
 
   expect(host).toEqual({
-    name: "web1",
+    names: ["web1"],
     hostname: "10.0.0.5",
     port: "2222",
     user: "deploy",
@@ -66,8 +66,8 @@ test("buildNewHost does not store empty strings for optional fields", () => {
 
 test("hostsWithoutProxyJump returns empty when every host is already proxied, which is runAdd's exit-1 precondition", () => {
   const hosts: Host[] = [
-    { name: "web1", proxyJump: "bastion", extras: [] },
-    { name: "web2", proxyJump: "bastion", extras: [] },
+    { names: ["web1"], proxyJump: "bastion", extras: [] },
+    { names: ["web2"], proxyJump: "bastion", extras: [] },
   ];
   expect(hostsWithoutProxyJump(hosts)).toEqual([]);
 });

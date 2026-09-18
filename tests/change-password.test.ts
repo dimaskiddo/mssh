@@ -40,7 +40,7 @@ test("changePassword re-keys the file: old password fails after, new password su
     await changePassword(path, "correct-horse", "new-password");
 
     expect(() => loadRaw(path, "correct-horse")).toThrow();
-    expect(loadHosts(path, "new-password").map((h) => h.name)).toEqual(hosts.map((h) => h.name));
+    expect(loadHosts(path, "new-password").map((h) => h.names)).toEqual(hosts.map((h) => h.names));
   });
 });
 

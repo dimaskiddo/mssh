@@ -1,4 +1,5 @@
 import { test, expect, spyOn } from "bun:test";
+import * as nodeFs from "node:fs";
 import { resolveSsh, requireSsh, installGuidance, type WhichFn } from "../src/ssh-binary";
 
 function fakeWhich(result: string | null): WhichFn {
@@ -29,15 +30,18 @@ test("requireSsh returns the absolute path without exiting when ssh is found", (
 });
 
 test("requireSsh prints guidance and exits(1) when ssh is missing", () => {
+  // fatal() (src/exit.ts) writes via a raw fd write, not console.error — see
+  // that module for why. Spy on writeSync itself rather than console.
   const exitSpy = spyOn(process, "exit").mockImplementation(((() => undefined) as unknown) as typeof process.exit);
-  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  const writeSpy = spyOn(nodeFs, "writeSync").mockImplementation(() => 0);
   try {
     requireSsh(fakeWhich(null));
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(errorSpy).toHaveBeenCalled();
+    expect(writeSpy).toHaveBeenCalled();
+    expect(writeSpy.mock.calls[0]?.[0]).toBe(2);
   } finally {
     exitSpy.mockRestore();
-    errorSpy.mockRestore();
+    writeSpy.mockRestore();
   }
 });
 

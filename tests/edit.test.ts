@@ -4,16 +4,21 @@ import { FIELD_LABELS } from "../src/field-labels";
 import type { Host, ModeledField } from "../src/ssh-config";
 
 function host(overrides: Partial<Host>): Host {
-  return { name: "web1", extras: [], ...overrides };
+  return { names: ["web1"], extras: [], ...overrides };
 }
 
 test("findHost returns the host with a matching name", () => {
-  const hosts = [host({ name: "web1" }), host({ name: "web2" })];
-  expect(findHost(hosts, "web2")).toEqual(host({ name: "web2" }));
+  const hosts = [host({ names: ["web1"] }), host({ names: ["web2"] })];
+  expect(findHost(hosts, "web2")).toEqual(host({ names: ["web2"] }));
+});
+
+test("findHost matches any one of a multi-pattern host's names", () => {
+  const hosts = [host({ names: ["a", "b"] })];
+  expect(findHost(hosts, "b")).toEqual(host({ names: ["a", "b"] }));
 });
 
 test("findHost returns undefined when no host matches", () => {
-  const hosts = [host({ name: "web1" })];
+  const hosts = [host({ names: ["web1"] })];
   expect(findHost(hosts, "missing")).toBeUndefined();
 });
 

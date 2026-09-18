@@ -35,7 +35,7 @@ mock.module("../src/app-config", () => ({
   ...realAppConfig,
   loadSettings: () => ({ settings: { MSSH_CONFIG_PATH: scratchConfigPath }, sourcePath: undefined }),
   configPath: () => scratchConfigPath,
-  resolvePassword: async (opts: { forcePrompt: boolean }) => {
+  resolvePassword: async (_loaded: unknown, opts: { forcePrompt: boolean }) => {
     throw new HaltForTest(opts.forcePrompt);
   },
 }));

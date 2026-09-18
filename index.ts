@@ -11,15 +11,20 @@ import { runDelete } from "./src/commands/delete";
 import { runConnect } from "./src/commands/connect";
 import { runChangePassword } from "./src/commands/change-password";
 import {
+  configPath,
   defaultEncConfigPath,
   legacyEncConfigPath,
   loadSettings,
   migrateLegacyConfigFrom,
+  runDir,
   toDisplayPath,
 } from "./src/app-config";
+import { sweepOrphanedTempFiles } from "./src/sweep";
+import { fatal } from "./src/exit";
+import { dirname } from "node:path";
 import pkg from "./package.json";
 
-const USAGE = `mssh — encrypted SSH config wrapper
+const USAGE = `MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper
 
 Usage:
   mssh                          pick a host from the list and connect (always prompts)
@@ -29,7 +34,7 @@ Usage:
   mssh config add                add a host
   mssh config edit [name]        edit one modeled field on a host
   mssh config delete [name]      delete a host
-  mssh <host> [ssh flags...]     connect
+  mssh <host> [ssh flags...]     connect to a host
   mssh version, --version        show the version
   mssh --help, -h                show this help`;
 
@@ -47,57 +52,83 @@ function migrateLegacyConfig(): void {
   }
 }
 
+// Runs once per invocation, same placement as migrateLegacyConfig(): cleans
+// up plaintext run-dir temp configs and sealed config-directory tmp files
+// orphaned by a killed mssh process — see sweep.ts for why this can't just
+// happen at exit time.
+function sweepTempFiles(): void {
+  const { settings } = loadSettings();
+  sweepOrphanedTempFiles(runDir(), dirname(configPath(settings)));
+}
+
+// Silent trailing args (`mssh setup anything`) look like they configured
+// something; only ssh passthrough (runConnect) legitimately takes extra argv.
+function rejectExtraArgs(extra: string[]): void {
+  if (extra.length === 0) return;
+  fatal(`Unexpected argument(s): ${extra.join(" ")}`);
+}
+
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
 
   // Handled before any other dispatch: neither prompts for a password nor
   // touches disk, unlike falling through to runConnect would.
   if (cmd === "--help" || cmd === "-h") {
+    rejectExtraArgs(rest);
     console.log(USAGE);
     return;
   }
 
   if (cmd === "--version" || cmd === "version") {
+    rejectExtraArgs(rest);
     console.log(`${pkg.displayName} v${pkg.version}`);
     console.log(`By ${pkg.author}`);
     return;
   }
 
   migrateLegacyConfig();
+  sweepTempFiles();
 
   if (cmd === "setup") {
+    rejectExtraArgs(rest);
     await runSetup();
     return;
   }
 
   if (cmd === "change-password") {
+    rejectExtraArgs(rest);
     await runChangePassword();
     return;
   }
 
   if (cmd === "config") {
-    if (rest[0] === "list") {
+    const [sub, ...subRest] = rest;
+
+    if (sub === "list") {
+      rejectExtraArgs(subRest);
       await runList();
       return;
     }
 
-    if (rest[0] === "add") {
+    if (sub === "add") {
+      rejectExtraArgs(subRest);
       await runAdd();
       return;
     }
 
-    if (rest[0] === "edit") {
-      await runEdit(rest[1]);
+    if (sub === "edit") {
+      rejectExtraArgs(subRest.slice(1));
+      await runEdit(subRest[0]);
       return;
     }
 
-    if (rest[0] === "delete") {
-      await runDelete(rest[1]);
+    if (sub === "delete") {
+      rejectExtraArgs(subRest.slice(1));
+      await runDelete(subRest[0]);
       return;
     }
 
-    console.error("Usage: mssh config <list|add|edit|delete>");
-    process.exit(1);
+    fatal("Usage: mssh config <list|add|edit|delete>");
   }
 
   if (cmd === undefined) {
@@ -109,6 +140,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+  fatal(err instanceof Error ? err.message : String(err));
 });
