@@ -8,6 +8,7 @@ import {
   hostsWithoutProxyJump,
   emptyToUndefined,
   isValidFieldValue,
+  isValidPort,
   hostHasName,
   connectableNames,
   hostLabel,
@@ -51,6 +52,17 @@ export async function pickHost(hosts: Host[]): Promise<{ host: Host; pattern: st
 // otherwise resolve to the same undefined.
 const KEEP = Symbol("keep");
 
+// Extracted so the port-vs-text dispatch is covered directly by tests
+// without spawning promptNewValue's terminal dependency.
+export function validateFieldValue(field: ModeledField, value: string): true | string {
+  const label = FIELD_LABELS[field];
+  if (!isValidFieldValue(value)) return `${label} cannot contain a newline.`;
+  if (field === "port" && value.trim() !== "" && !isValidPort(value.trim())) {
+    return "Port must be a number between 1 and 65535.";
+  }
+  return true;
+}
+
 async function promptNewValue(hosts: Host[], target: Host, field: ModeledField): Promise<string | undefined | typeof KEEP> {
   if (field === "proxyJump") {
     // A host can't jump through itself, hence the self-exclusion (by
@@ -65,14 +77,11 @@ async function promptNewValue(hosts: Host[], target: Host, field: ModeledField):
   }
 
   const label = FIELD_LABELS[field];
-  const current = await promptInput(fieldPrompt(label), { default: target[field] ?? "" });
-  // UX check mirroring ssh-config.ts's load-bearing one in serialize(): catch
-  // an injected newline here with a clear message instead of a generic throw
-  // at save time.
-  if (!isValidFieldValue(current)) {
-    fatal(`${label} cannot contain a newline.`);
-  }
-  return emptyToUndefined(current);
+  const current = await promptInput(fieldPrompt(label), {
+    default: target[field] ?? "",
+    validate: (value) => validateFieldValue(field, value),
+  });
+  return emptyToUndefined(current.trim());
 }
 
 export async function runEdit(name?: string): Promise<void> {

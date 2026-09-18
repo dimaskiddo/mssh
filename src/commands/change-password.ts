@@ -42,11 +42,9 @@ export async function runChangePassword(): Promise<void> {
     fatal(err instanceof Error ? err.message : String(err));
   }
 
-  const next = await promptPassword(fieldPrompt(PASSWORD_SET_LABEL));
-
-  if (!isValidPassword(next)) {
-    fatal("Password must not be empty.");
-  }
+  const next = await promptPassword(fieldPrompt(PASSWORD_SET_LABEL), {
+    validate: (value) => (isValidPassword(value) ? true : "Password must not be empty."),
+  });
 
   const confirm = await promptPassword(fieldPrompt(PASSWORD_CONFIRM_LABEL));
 

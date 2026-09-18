@@ -18,7 +18,8 @@ import {
   emptyToUndefined,
   serialize,
   isValidFieldValue,
-  isValidHostName,
+  isValidNewHostName,
+  isValidPort,
   hostHasName,
   connectableNames,
   type Host,
@@ -40,15 +41,6 @@ const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-passw
 // this sync syscall indefinitely — spawnSync itself doesn't process signals
 // while blocked, so SIGINT can't interrupt it either.
 const REMOTE_COMMAND_TIMEOUT_MS = 15_000;
-
-// @inquirer's input prompt cannot itself return a newline, so this can't
-// currently trigger — kept as defense in depth against a future input path
-// (piped stdin, a different prompt library) that isn't similarly constrained.
-function requireValidFieldValue(label: string, value: string): void {
-  if (!isValidFieldValue(value)) {
-    fatal(`${label} cannot contain a newline.`);
-  }
-}
 
 // userInfo() throws when the running uid has no passwd entry (common in
 // containers) — exactly the situation where a usable fallback matters most.
@@ -183,6 +175,22 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
   }
 }
 
+// Extracted so RESERVED_HOST_NAMES, the duplicate-name check, and the
+// character-class rule are covered directly by tests without spawning
+// runAdd's fs/crypto/terminal dependencies.
+export function validateNewAlias(value: string, existingHosts: Host[]): true | string {
+  if (!isValidNewHostName(value)) {
+    return "Use letters, digits, dot, dash or underscore only.";
+  }
+  if (RESERVED_HOST_NAMES.has(value)) {
+    return `"${value}" is reserved by mssh itself and would be unreachable.`;
+  }
+  if (existingHosts.some((h) => hostHasName(h, value))) {
+    return `Host "${value}" already exists.`;
+  }
+  return true;
+}
+
 export async function runAdd(): Promise<void> {
   const loaded = loadSettings();
   const { settings } = loaded;
@@ -192,23 +200,25 @@ export async function runAdd(): Promise<void> {
 
   const existingHosts = loadHosts(path, password);
 
-  const name = await promptInput(fieldPrompt(HOST_ALIAS_LABEL));
-  if (!isValidHostName(name)) {
-    fatal("Host name must be non-empty and contain no whitespace.");
-  }
-  if (RESERVED_HOST_NAMES.has(name)) {
-    fatal(`Host name "${name}" is reserved by mssh itself and would be unreachable; choose another name.`);
-  }
-  if (existingHosts.some((h) => hostHasName(h, name))) {
-    fatal(`Host "${name}" already exists.`);
-  }
+  const name = await promptInput(fieldPrompt(HOST_ALIAS_LABEL), {
+    validate: (value) => validateNewAlias(value, existingHosts),
+  });
 
-  const hostname = await promptInput(fieldPrompt(FIELD_LABELS.hostname));
-  requireValidFieldValue(FIELD_LABELS.hostname, hostname);
-  const port = await promptInput(fieldPrompt(FIELD_LABELS.port), { default: "22" });
-  requireValidFieldValue(FIELD_LABELS.port, port);
-  const user = await promptInput(fieldPrompt(FIELD_LABELS.user), { default: defaultUsername() });
-  requireValidFieldValue(FIELD_LABELS.user, user);
+  const hostname = (
+    await promptInput(fieldPrompt(FIELD_LABELS.hostname), {
+      validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.hostname} cannot contain a newline.`),
+    })
+  ).trim();
+  const port = await promptInput(fieldPrompt(FIELD_LABELS.port), {
+    default: "22",
+    validate: (value) => (value === "" || isValidPort(value) ? true : "Port must be a number between 1 and 65535."),
+  });
+  const user = (
+    await promptInput(fieldPrompt(FIELD_LABELS.user), {
+      default: defaultUsername(),
+      validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.user} cannot contain a newline.`),
+    })
+  ).trim();
 
   // Threads both the chosen Host block and the specific pattern the user
   // picked (a multi-pattern jump host offers several) through to
@@ -249,10 +259,12 @@ export async function runAdd(): Promise<void> {
   // question whose result is then discarded.
   let identityFile = pulledKeyPath;
   if (identityFile === undefined) {
-    identityFile = await promptInput(fieldPrompt(FIELD_LABELS.identityFile), {
-      default: settings.DEFAULT_SSH_KEY_PATH,
-    });
-    requireValidFieldValue(FIELD_LABELS.identityFile, identityFile);
+    identityFile = (
+      await promptInput(fieldPrompt(FIELD_LABELS.identityFile), {
+        default: settings.DEFAULT_SSH_KEY_PATH,
+        validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.identityFile} cannot contain a newline.`),
+      })
+    ).trim();
   }
 
   const newHost = buildNewHost({ name, hostname, port, user, identityFile, proxyJump: jumpSelection?.pattern });

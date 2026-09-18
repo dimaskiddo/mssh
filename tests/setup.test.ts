@@ -21,3 +21,7 @@ test("isValidPassword accepts any non-empty string", () => {
   expect(isValidPassword("a")).toBe(true);
   expect(isValidPassword("hunter2")).toBe(true);
 });
+
+test("isValidPassword accepts a single space, since passwords are never trimmed", () => {
+  expect(isValidPassword(" ")).toBe(true);
+});

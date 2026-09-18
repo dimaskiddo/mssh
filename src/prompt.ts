@@ -28,12 +28,16 @@ async function runPrompt<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export function promptInput(message: string, opts?: { default?: string }): Promise<string> {
-  return runPrompt(() => input({ message, default: opts?.default }));
+// @inquirer's own contract: return true when valid, or a string message to
+// show inline and re-prompt without losing any other answer already given.
+export type Validator = (value: string) => true | string;
+
+export function promptInput(message: string, opts?: { default?: string; validate?: Validator }): Promise<string> {
+  return runPrompt(() => input({ message, default: opts?.default, validate: opts?.validate }));
 }
 
-export function promptPassword(message: string): Promise<string> {
-  return runPrompt(() => password({ message, mask: true }));
+export function promptPassword(message: string, opts?: { validate?: Validator }): Promise<string> {
+  return runPrompt(() => password({ message, mask: true, validate: opts?.validate }));
 }
 
 export function promptSelect<T>(message: string, choices: Array<{ name: string; value: T }>): Promise<T> {

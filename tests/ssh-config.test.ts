@@ -8,6 +8,8 @@ import {
   hostsWithoutProxyJump,
   isValidFieldValue,
   isValidHostName,
+  isValidNewHostName,
+  isValidPort,
   proxyJumpAliases,
   hostsForTarget,
   withKeepAlive,
@@ -19,6 +21,7 @@ import {
   hostLabel,
   hostHasName,
   connectableNames,
+  duplicateAlias,
   EXECUTING_DIRECTIVES,
   REFUSED_DIRECTIVES,
   type Host,
@@ -640,4 +643,116 @@ test("connectableNames flattens every host's patterns and excludes glob/negation
     { names: ["*", "!c"], extras: [] },
   ];
   expect(connectableNames(hosts)).toEqual(["a", "b"]);
+});
+
+test("isValidNewHostName accepts the ASCII allowlist", () => {
+  expect(isValidNewHostName("web1")).toBe(true);
+  expect(isValidNewHostName("web1.internal")).toBe(true);
+  expect(isValidNewHostName("jump-box_2")).toBe(true);
+});
+
+test("isValidNewHostName rejects anything outside the allowlist, including glob/argv/path metacharacters", () => {
+  expect(isValidNewHostName("")).toBe(false);
+  expect(isValidNewHostName("#x")).toBe(false);
+  expect(isValidNewHostName('a"b')).toBe(false);
+  expect(isValidNewHostName("*")).toBe(false);
+  expect(isValidNewHostName("!x")).toBe(false);
+  expect(isValidNewHostName("we b")).toBe(false);
+  expect(isValidNewHostName("-oProxyCommand=id")).toBe(false);
+  expect(isValidNewHostName("-F")).toBe(false);
+  expect(isValidNewHostName("../evil")).toBe(false);
+  expect(isValidNewHostName(".")).toBe(false);
+  expect(isValidNewHostName("..")).toBe(false);
+  expect(isValidNewHostName("user@host")).toBe(false);
+  expect(isValidNewHostName("café")).toBe(false);
+});
+
+test("isValidPort accepts in-range integers", () => {
+  expect(isValidPort("1")).toBe(true);
+  expect(isValidPort("22")).toBe(true);
+  expect(isValidPort("2222")).toBe(true);
+  expect(isValidPort("65535")).toBe(true);
+});
+
+test("isValidPort rejects out-of-range, non-numeric, and malformed values", () => {
+  expect(isValidPort("")).toBe(false);
+  expect(isValidPort("0")).toBe(false);
+  expect(isValidPort("-1")).toBe(false);
+  expect(isValidPort("65536")).toBe(false);
+  expect(isValidPort("99999")).toBe(false);
+  expect(isValidPort("abc")).toBe(false);
+  expect(isValidPort("22 ")).toBe(false);
+  expect(isValidPort("2.2")).toBe(false);
+  expect(isValidPort("０２２")).toBe(false); // full-width digits — Number() would otherwise coerce these
+});
+
+test("parse does not leak a dropped Host's directives into the preceding host", () => {
+  const hosts = parse("Host web1\n  HostName web1.internal\nHost #x\n  SendEnv LEAKED\n");
+  expect(hosts).toEqual([{ names: ["web1"], hostname: "web1.internal", extras: [] }]);
+});
+
+test("duplicateAlias returns undefined when every alias is distinct", () => {
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }, { names: ["web2"], extras: [] }];
+  expect(duplicateAlias(hosts)).toBeUndefined();
+});
+
+test("duplicateAlias returns undefined for an empty list", () => {
+  expect(duplicateAlias([])).toBeUndefined();
+});
+
+test("duplicateAlias returns the shared alias when two hosts claim it", () => {
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }, { names: ["web1"], extras: [] }];
+  expect(duplicateAlias(hosts)).toBe("web1");
+});
+
+test("duplicateAlias detects overlap between a multi-pattern host and a later single-pattern host", () => {
+  const hosts: Host[] = [{ names: ["alpha", "beta"], extras: [] }, { names: ["beta"], extras: [] }];
+  expect(duplicateAlias(hosts)).toBe("beta");
+});
+
+test("duplicateAlias returns the first collision when several exist", () => {
+  const hosts: Host[] = [
+    { names: ["web1"], extras: [] },
+    { names: ["web2"], extras: [] },
+    { names: ["web1"], extras: [] },
+    { names: ["web2"], extras: [] },
+  ];
+  expect(duplicateAlias(hosts)).toBe("web1");
+});
+
+test("duplicateAlias is case-sensitive: web1 and WEB1 are distinct hosts, matching ssh's own alias matching", () => {
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }, { names: ["WEB1"], extras: [] }];
+  expect(duplicateAlias(hosts)).toBeUndefined();
+});
+
+test("duplicateAlias ignores a repeated pattern within one host — that is assertSerializable's check to make", () => {
+  const hosts: Host[] = [{ names: ["web1", "web1"], extras: [] }];
+  expect(duplicateAlias(hosts)).toBeUndefined();
+});
+
+test("serialize throws when two hosts share an alias, and names it", () => {
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }, { names: ["web1"], extras: [] }];
+  expect(() => serialize(hosts)).toThrow(/alias "web1" is defined by more than one host/);
+});
+
+test("serialize throws when a single host repeats a name pattern", () => {
+  const hosts: Host[] = [{ names: ["web1", "web1"], extras: [] }];
+  expect(() => serialize(hosts)).toThrow(/duplicate name pattern/);
+});
+
+test("serialize still accepts a legitimate multi-pattern host with distinct names", () => {
+  const hosts: Host[] = [{ names: ["web1", "web1-alt"], extras: [] }];
+  expect(() => serialize(hosts)).not.toThrow();
+});
+
+test("serialize accepts the result of deleteHost repairing a duplicate-bearing config — delete stays a working escape hatch", () => {
+  const dup = parse("Host web1\n  HostName first.example\n\nHost web1\n  HostName second.example\n");
+  const repaired = deleteHost(dup, "web1");
+  expect(repaired).toHaveLength(1);
+  expect(() => serialize(repaired)).not.toThrow();
+});
+
+test("parse stays permissive: it returns both blocks for a duplicate-alias config, unlike the strict serialize", () => {
+  const dup = parse("Host web1\n  HostName first.example\n\nHost web1\n  HostName second.example\n");
+  expect(dup).toHaveLength(2);
 });

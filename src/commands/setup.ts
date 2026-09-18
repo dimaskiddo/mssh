@@ -38,11 +38,9 @@ export async function runSetup(): Promise<void> {
     fatal(`Config already exists at ${path}. Refusing to overwrite.`);
   }
 
-  const passwordFirst = await promptPassword(fieldPrompt(PASSWORD_SET_LABEL));
-
-  if (!isValidPassword(passwordFirst)) {
-    fatal("Password must not be empty.");
-  }
+  const passwordFirst = await promptPassword(fieldPrompt(PASSWORD_SET_LABEL), {
+    validate: (value) => (isValidPassword(value) ? true : "Password must not be empty."),
+  });
 
   const passwordConfirm = await promptPassword(fieldPrompt(PASSWORD_CONFIRM_LABEL));
 

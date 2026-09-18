@@ -7,7 +7,7 @@
 // host list; see app-config.ts's resolvePassword for the routing rule.
 import { configPath, loadSettings, resolvePassword } from "../app-config";
 import { loadRaw } from "../store";
-import { parse, connectableNames, type Host } from "../ssh-config";
+import { parse, connectableNames, duplicateAlias, type Host } from "../ssh-config";
 import { promptSelect } from "../prompt";
 import { connectWithRaw, type SpawnFn } from "./connect";
 import { fieldPrompt, CONNECT_TO_LABEL } from "../field-labels";
@@ -33,6 +33,14 @@ export async function runList(): Promise<void> {
   if (hosts.length === 0) {
     console.log(NO_HOSTS_MESSAGE);
     return;
+  }
+
+  const collision = duplicateAlias(hosts);
+  if (collision !== undefined) {
+    console.error(
+      `Warning: alias "${collision}" is defined by more than one host; only the first is reachable. ` +
+        `Remove the extra with 'mssh config delete ${collision}'.`,
+    );
   }
 
   for (const name of connectableNames(hosts)) {

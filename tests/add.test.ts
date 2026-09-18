@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { buildNewHost, tempConfigRunner, defaultUsername } from "../src/commands/add";
+import { buildNewHost, tempConfigRunner, defaultUsername, validateNewAlias } from "../src/commands/add";
 import { hostsWithoutProxyJump, type Host } from "../src/ssh-config";
 import { resolveSsh } from "../src/ssh-binary";
 
@@ -82,6 +82,23 @@ test("defaultUsername returns userInfo().username when available, else the root 
   }
   expect(defaultUsername()).toBe(expected);
   expect(defaultUsername().length).toBeGreaterThan(0);
+});
+
+test("validateNewAlias rejects a reserved name", () => {
+  expect(validateNewAlias("setup", [])).toBe('"setup" is reserved by mssh itself and would be unreachable.');
+});
+
+test("validateNewAlias rejects a duplicate of an existing host's name", () => {
+  const existing: Host[] = [{ names: ["web1"], extras: [] }];
+  expect(validateNewAlias("web1", existing)).toBe('Host "web1" already exists.');
+});
+
+test("validateNewAlias rejects a glob/invalid name before checking reserved or duplicate", () => {
+  expect(validateNewAlias("*", [])).toBe("Use letters, digits, dot, dash or underscore only.");
+});
+
+test("validateNewAlias accepts a valid, non-reserved, non-duplicate name", () => {
+  expect(validateNewAlias("web2", [])).toBe(true);
 });
 
 test("tempConfigRunner threads -F at the given temp config path through to the real ssh binary", () => {

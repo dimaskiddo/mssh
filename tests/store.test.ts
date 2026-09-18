@@ -6,6 +6,7 @@ import { loadRaw, loadHosts, saveHosts } from "../src/store";
 import { parse, withKeepAlive } from "../src/ssh-config";
 import type { Host } from "../src/ssh-config";
 import * as realCrypto from "../src/crypto";
+import { seal } from "../src/crypto";
 
 function withScratchDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "mssh-store-test-"));
@@ -116,6 +117,32 @@ test("saveHosts with exclusive:true refuses to overwrite an existing config", ()
   });
 });
 
+test("saveHosts propagates the duplicate-alias error, confirming the invariant reaches the single write path", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    const hosts: Host[] = [{ names: ["web1"], extras: [] }, { names: ["web1"], extras: [] }];
+
+    expect(() => saveHosts(path, hosts, "correct-horse")).toThrow(/alias "web1" is defined by more than one host/);
+  });
+});
+
+test("loadHosts on a sealed duplicate-bearing config returns both hosts without throwing — read paths stay permissive", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    const dupText = "Host web1\n  HostName first.example\n\nHost web1\n  HostName second.example\n";
+    writeFileSync(path, seal(dupText, "correct-horse"));
+
+    const loaded = loadHosts(path, "correct-horse");
+    expect(loaded).toEqual(parse(dupText));
+    expect(loaded).toHaveLength(2);
+  });
+});
+
+// The two tests below mock crypto's open() and restore it in a finally, but
+// mock.module() mutates the shared module object rather than swapping it, so
+// any test after these that calls the real open() through the same binding
+// sees the last mock instead of a restore — keep every test exercising real
+// crypto (above) ordered before these two.
 test("loadRaw reports a scrypt resource error distinctly instead of folding it into wrong password", () => {
   withScratchDir((dir) => {
     const path = join(dir, "ssh_config.enc");

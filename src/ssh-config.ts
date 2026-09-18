@@ -218,6 +218,28 @@ export function isValidHostName(name: string): boolean {
   return name !== "" && !/\s/.test(name);
 }
 
+// The alias reaches three sinks with three different rules: config text
+// (unquoted), an ssh argv element (add.ts's jump-host spawns), and a
+// filename component (remote-keys.ts). This is the intersection of all
+// three, matching isValidKeyFilename's class deliberately — a leading "-" is
+// a flag to ssh, "*"/"?"/"!" silently claim other hosts' config, and "#" or a
+// quote does not survive its own round-trip. Applied only to newly typed
+// aliases; isValidHostName above stays the permissive rule for loading and
+// serializing configs that already exist.
+export function isValidNewHostName(name: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(name) && !/^\.+$/.test(name) && !name.startsWith("-");
+}
+
+// ssh rejects anything outside 1-65535 at connect time, by which point the
+// value is already sealed into the encrypted config. Leading/trailing
+// whitespace and non-ASCII digits both reach ssh as "Bad port"; reject them
+// here instead of at connect time.
+export function isValidPort(value: string): boolean {
+  if (!/^[0-9]+$/.test(value)) return false;
+  const port = Number(value);
+  return port >= 1 && port <= 65535;
+}
+
 export function hostLabel(host: Host): string {
   return host.names.join(" ");
 }
@@ -256,7 +278,14 @@ export function parse(text: string): Host[] {
 
     if (lowerKey === "host") {
       const patterns = decodeTokens(stripComment(split.rest));
-      if (patterns === undefined || patterns.length === 0) continue;
+      // A Host line we can't represent ends the previous block just as Match
+      // does below: its directives belong to a host that no longer exists,
+      // so they must not fall through onto whichever host happened to
+      // precede it in the file.
+      if (patterns === undefined || patterns.length === 0) {
+        current = undefined;
+        continue;
+      }
       current = { names: patterns, extras: [] };
       hosts.push(current);
       continue;
@@ -320,6 +349,12 @@ function assertSerializable(host: Host): void {
       throw new Error(`invalid host name: ${JSON.stringify(name)}`);
     }
   }
+  // "Host web1 web1" is accepted by ssh (the pattern simply matches twice)
+  // but there is no reason to write one, and it would defeat the cross-host
+  // check below by making a host collide with itself.
+  if (new Set(host.names).size !== host.names.length) {
+    throw new Error(`invalid host: duplicate name pattern in "${hostLabel(host)}"`);
+  }
   const fields: Array<[string, string | undefined]> = [
     ["HostName", host.hostname],
     ["Port", host.port],
@@ -352,7 +387,35 @@ function assertSerializable(host: Host): void {
   }
 }
 
+// The first alias claimed by more than one Host block, or undefined when
+// every alias is unique. ssh merges same-named blocks per directive, so a
+// duplicate resolves to a host mssh cannot represent and never displays;
+// every mutation here is first-wins, making the later block permanently
+// unreachable. Exact, case-sensitive comparison deliberately: ssh's own
+// alias matching is case-sensitive, so "web1" and "WEB1" are distinct hosts.
+// Each host's own names are deduped before comparing — a repeated pattern
+// within one host (e.g. "Host web1 web1") is assertSerializable's check to
+// make, not this one's.
+export function duplicateAlias(hosts: Host[]): string | undefined {
+  const seen = new Set<string>();
+  for (const host of hosts) {
+    for (const name of new Set(host.names)) {
+      if (seen.has(name)) return name;
+      seen.add(name);
+    }
+  }
+  return undefined;
+}
+
 export function serialize(hosts: Host[]): string {
+  const collision = duplicateAlias(hosts);
+  if (collision !== undefined) {
+    throw new Error(
+      `refusing to write a config where alias "${collision}" is defined by more than one host: ` +
+        `ssh would silently merge them and only the first is reachable from mssh`,
+    );
+  }
+
   const blocks = hosts.map((host) => {
     assertSerializable(host);
 
