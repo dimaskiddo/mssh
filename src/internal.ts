@@ -14,4 +14,4 @@ export { reseal, changePassword } from "./commands/change-password";
 export { forwardsTermAndHup, rejectedFlags, childExitCode } from "./commands/connect";
 export { findDependents } from "./commands/delete";
 export { FIELD_CHOICES, validateFieldValue } from "./commands/edit";
-export { hostChoices } from "./commands/list";
+export { hostChoices, sortNames, parseSortFlag } from "./commands/list";

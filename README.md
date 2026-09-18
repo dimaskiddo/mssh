@@ -111,6 +111,11 @@ To build all six platform targets: `bun run build:all`.
 
 ### 📋 Listing
 *   **`mssh`** / **`mssh config list`**: Lists configured hosts. Always prompts for the password, ignoring `MSSH_PASSWORD`, so a stray env var can't silently expose your host list.
+*   **`--sort=asc|dsc|cfg`**: Controls the listing order for both forms above. `asc` (default) sorts ascending, `dsc` sorts descending, `cfg` prints hosts in config-file order (no sorting). Sorting is case-sensitive ASCII order. An unrecognized value warns and falls back to `asc`.
+    ```sh
+    mssh config list --sort=dsc   # descending
+    mssh --sort=cfg               # picker in config-file order
+    ```
 
 ### ✏️ Host Management
 *   **`mssh config add`**: Prompts for hostname/port/user/identity file, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`.

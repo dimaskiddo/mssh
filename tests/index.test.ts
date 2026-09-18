@@ -98,6 +98,7 @@ test("config with no subcommand prints usage and exits 1", () => {
 const NO_CONFIG_CASES: Array<[string, string[]]> = [
   ["config list", ["config", "list"]],
   ["bare mssh", []],
+  ["bare mssh with --sort", ["--sort=dsc"]],
   ["config add", ["config", "add"]],
   ["config edit", ["config", "edit"]],
   ["config delete", ["config", "delete"]],
@@ -114,6 +115,22 @@ for (const [label, args] of NO_CONFIG_CASES) {
     expect(result.stdout).not.toContain("Password");
   });
 }
+
+test("config list with an unknown --sort= value warns and still reaches the no-config path", () => {
+  const result = runCli(["config", "list", "--sort=bogus"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain('unknown --sort value "bogus"');
+  expect(result.stderr).toContain("Run 'mssh setup'");
+});
+
+test("mssh <host> --sort=asc reaches the connect path, not the listing", () => {
+  const result = runCli(["somehost", "--sort=asc"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).not.toContain("--sort");
+  expect(result.stderr).toContain("Run 'mssh setup'");
+});
 
 test("a truncated config is rejected before any password prompt", () => {
   const home = emptyHome();

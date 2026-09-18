@@ -2,7 +2,7 @@
 // Entry point: `setup`/`config` are recognized only as the literal first arg;
 // bare `mssh` lists hosts; everything else passes through to connect.
 import { runSetup } from "./src/commands/setup";
-import { runList, runListConnect } from "./src/commands/list";
+import { runList, runListConnect, parseSortFlag } from "./src/commands/list";
 import { runAdd } from "./src/commands/add";
 import { runEdit } from "./src/commands/edit";
 import { runDelete } from "./src/commands/delete";
@@ -26,16 +26,16 @@ import pkg from "./package.json";
 const USAGE = `MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper
 
 Usage:
-  mssh                          pick a host from the list and connect (always prompts)
-  mssh setup                    create the encrypted config
-  mssh change-password          re-encrypt the config under a new password (always prompts)
-  mssh config list              list host aliases (always prompts)
-  mssh config add                add a host
-  mssh config edit [name]        edit one modeled field on a host
-  mssh config delete [name]      delete a host
-  mssh <host> [ssh flags...]     connect to a host
-  mssh version, --version        show the version
-  mssh --help, -h                show this help`;
+  mssh [--sort=asc|dsc|cfg]             pick a host from the list and connect
+  mssh setup                            create the encrypted config
+  mssh change-password                  re-encrypt the config under a new password
+  mssh config list [--sort=asc|dsc|cfg]   list host aliases
+  mssh config add                         add a host
+  mssh config edit [name]                 edit one modeled field on a host
+  mssh config delete [name]               delete a host
+  mssh <host> [ssh flags...]            connect to a host
+  mssh version, --version               show the version
+  mssh --help, -h                       show this help`;
 
 // ssh_config.enc -> config rename shim; stderr so it doesn't pollute `config list`'s output.
 function migrateLegacyConfig(settings: Settings): void {
@@ -56,6 +56,13 @@ function sweepTempFiles(settings: Settings): void {
 function rejectExtraArgs(extra: string[]): void {
   if (extra.length === 0) return;
   fatal(`Unexpected argument(s): ${extra.join(" ")}`);
+}
+
+// Non-fatal, unlike rejectExtraArgs: a bad sort value still has an obvious
+// intended listing, and failing would hide it behind a usage error.
+function warnInvalidSort(invalid: string | undefined): void {
+  if (invalid === undefined) return;
+  console.error(`Warning: unknown --sort value "${invalid}"; expected asc, dsc, or cfg. Listing ascending.`);
 }
 
 async function main(): Promise<void> {
@@ -94,8 +101,10 @@ async function main(): Promise<void> {
     const [sub, ...subRest] = rest;
 
     if (sub === "list") {
-      rejectExtraArgs(subRest);
-      await runList();
+      const { order, rest: extra, invalid } = parseSortFlag(subRest);
+      rejectExtraArgs(extra);
+      warnInvalidSort(invalid);
+      await runList(order);
       return;
     }
 
@@ -120,12 +129,15 @@ async function main(): Promise<void> {
     fatal("Usage: mssh config <list|add|edit|delete>");
   }
 
-  if (cmd === undefined) {
-    await runListConnect();
+  const argv = process.argv.slice(2);
+  const bare = parseSortFlag(argv);
+  if (bare.rest.length === 0) {
+    warnInvalidSort(bare.invalid);
+    await runListConnect(bare.order);
     return;
   }
 
-  await runConnect(process.argv.slice(2));
+  await runConnect(argv);
 }
 
 main().catch((err: unknown) => {
