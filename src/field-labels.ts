@@ -18,11 +18,7 @@ export const FIELD_LABELS: Record<ModeledField, string> = {
   proxyJump: "Bastion / Jump Host",
 };
 
-// Every label that can appear before a ":" feeds the width, so the column fits
-// the longest of them (Bastion / Jump Host) the way a web form aligns to its
-// longest label. +1 keeps at least one space before the colon rather than
-// letting that longest label butt against it. Exported so tests assert against
-// the real list instead of a hand-maintained copy that could drift from it.
+// Every label that can precede a ":" feeds the column width; +1 keeps a space before the longest one's colon.
 export const ALIGNED_LABELS = [
   HOST_ALIAS_LABEL,
   FIELD_PICKER_LABEL,

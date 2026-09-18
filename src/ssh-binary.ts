@@ -6,17 +6,14 @@ import { fatal } from "./exit";
 
 export type WhichFn = (cmd: string) => string | null;
 
-// PATH-based resolution alone is not enough: a shadowing `ssh` earlier on
-// PATH would run instead of the real one. isAbsolute is the load-bearing
-// check — every spawn site uses this return value verbatim, so a relative
-// or unresolved result must never reach a spawn call.
+// PATH-based resolution alone isn't enough: a shadowing `ssh` earlier on PATH
+// would run instead of the real one. isAbsolute is the load-bearing check —
+// every spawn site uses this return value verbatim.
 export function resolveSsh(which: WhichFn = Bun.which): string | undefined {
   const found = which("ssh");
   return found !== null && isAbsolute(found) ? found : undefined;
 }
 
-// Pure and platform-injectable purely for testability; requireSsh itself
-// reads the real process.platform.
 export function installGuidance(platform: NodeJS.Platform): string {
   if (platform === "win32") {
     return [

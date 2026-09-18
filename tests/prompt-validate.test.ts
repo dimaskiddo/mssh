@@ -1,8 +1,6 @@
 // Separate file from prompt.test.ts: mock.module() must run before the
-// module under test is ever imported (see connect-spawn.test.ts), and
-// prompt.test.ts already statically imports "../src/prompt" for its TTY-guard
-// tests, so mocking @inquirer/prompts there would arrive too late to affect
-// that already-cached binding.
+// module under test is imported (see connect-spawn.test.ts), which
+// prompt.test.ts's own static import of "../src/prompt" already precludes.
 import { test, expect, mock, afterAll } from "bun:test";
 import * as realInquirer from "@inquirer/prompts";
 

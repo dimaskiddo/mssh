@@ -1,9 +1,5 @@
-// Cross-platform secure file/directory writing. The single chokepoint for
-// permission locking down: every write of sensitive data elsewhere in the
-// project (encrypted config, temp connect-time config, downloaded jump-host
-// keys) must go through writeSecure()/ensureSecureDir(). This is the only
-// module that references process.platform, chmodSync, or icacls for
-// permission purposes.
+// Cross-platform secure file/directory writing — the single chokepoint every
+// write of sensitive data (config, temp files, downloaded keys) must go through.
 import {
   chmodSync,
   mkdirSync,
@@ -26,9 +22,7 @@ import { randomBytes } from "node:crypto";
 export type CommandRunner = (argv: string[]) => { status: number | null; error?: Error; stderr?: string };
 
 // The one exported platform check other modules may use (e.g. app-config.ts's
-// advisory permission warning, which is unrelated to lockdown enforcement but
-// still needs to skip POSIX-mode-bit checks on Windows). Keeps process.platform
-// itself referenced in exactly one place.
+// advisory permission warning) — keeps process.platform referenced in exactly one place.
 export function isWindows(): boolean {
   return process.platform === "win32";
 }
@@ -48,12 +42,8 @@ function icaclsPath(): string {
   return `${systemRoot}\\System32\\icacls.exe`;
 }
 
-// userInfo() throws when the running account has no matching entry — same
-// hazard add.ts's defaultUsername() documents and guards against. Unlike
-// that POSIX fallback ("root"), a Windows icacls grantee must be a real
-// account name or the command fails outright (safely — lockdown() already
-// throws on a non-zero exit), so this falls back to the environment instead
-// of guessing, and includes the domain when one is set (domain machines).
+// userInfo() can throw when the account has no matching entry — same hazard
+// add.ts's defaultUsername() guards against; falls back to the environment.
 function lockdownGrantee(): string {
   try {
     const { username } = userInfo();
@@ -86,18 +76,9 @@ function lockdown(path: string, mode: number, runner: CommandRunner): void {
   }
 }
 
-// Opens the file directly instead of writeFileSync so lockdown() can run
-// between open and the write of the actual payload — mode/ACLs are applied
-// to the fd's already-created-or-truncated file, then the sensitive bytes go
-// in. "mode is set at creation" is only true for a brand-new path: an
-// existing file (restored from a backup that dropped modes, written by an
-// older mssh, pre-created by something else) keeps its old permissions
-// through open(), so without this ordering the payload would land on disk
-// at whatever mode the file already had, however briefly. "wx" (used for
-// connect.ts's temp config) fails if the target already exists instead of
-// silently overwriting a pre-created/symlinked file; the default "w" is
-// required for the encrypted config and downloaded keys, which are
-// legitimately overwritten across saves.
+// Opens the file directly (not writeFileSync) so lockdown() can run between
+// open and the write — an existing file keeps its old mode through open(),
+// so without this ordering the payload lands at whatever mode it already had.
 export function writeSecure(
   path: string,
   data: string | Buffer,
@@ -114,11 +95,9 @@ export function writeSecure(
   }
 }
 
-// rename()'s directory-entry update needs its own fsync: fsyncing the file's
-// fd (writeSecure, above) makes the bytes durable but says nothing about the
-// directory entry that now points at them, and that entry is exactly what
-// renameSync just changed. Skipped on Windows, which does not support
-// opening a directory for fsync.
+// rename()'s directory-entry update needs its own fsync — fsyncing the
+// file's fd says nothing about the entry renameSync just changed. Skipped on
+// Windows, which does not support opening a directory for fsync.
 function fsyncContainingDir(path: string): void {
   if (isWindows()) return;
   const dirFd = openSync(dirname(path), "r");
@@ -130,17 +109,8 @@ function fsyncContainingDir(path: string): void {
 }
 
 // Writes via a same-directory temp file then renameSync, so a write that dies
-// mid-way (crash, power loss) never leaves the target truncated or missing —
-// the old contents survive until the new ones are fully durable. rename() is
-// only atomic within one filesystem, which a sibling path guarantees; a
-// system temp dir would not. "wx" on the temp file for the same reason
-// writeSecure uses it elsewhere: never silently write through a pre-placed file.
-// exclusive: true fails (EEXIST) instead of replacing when path already
-// exists — for a caller (setup.ts) whose existsSync check sits before
-// interactive prompts, so the real guard against a concurrent create has to
-// be atomic, not checked. linkSync, unlike renameSync, never silently
-// replaces an existing destination on either POSIX or Windows, so it stands
-// in for rename in this mode rather than adding a second temp-file dance.
+// mid-way never leaves the target truncated or missing — rename() is atomic
+// only within one filesystem, which a sibling path guarantees.
 export function writeSecureAtomic(
   path: string,
   data: string | Buffer,
@@ -151,12 +121,8 @@ export function writeSecureAtomic(
   // whose writer is still alive, rather than racing a concurrent write.
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
 
-  // Registered before the temp file exists, removed in the finally below:
-  // a kill between creating tmp and the rename/link no catch block here can
-  // see. Matches connect.ts's/add.ts's own per-file exit net. Every explicit
-  // catch below also calls cleanupTmp() so the file is gone the moment
-  // control returns to the caller, not just at process exit — except the two
-  // "intact at tmp" error paths, which leave it for the caller to recover.
+  // Registered before the temp file exists so a kill mid-write still cleans
+  // it up; removed in the finally below once cleanup is otherwise guaranteed.
   const cleanupTmp = (): void => {
     try {
       unlinkSync(tmp);
@@ -192,19 +158,15 @@ export function writeSecureAtomic(
       const code = (err as NodeJS.ErrnoException).code;
 
       // POSIX rename() already replaces the destination atomically, so an
-      // EPERM/EEXIST reaching here (a sticky-bit directory, an immutable
-      // attribute, some overlay/network mounts) means the destination was
-      // never touched — propagate it as-is. Unlinking first, as the Windows
-      // branch below must, would turn a recoverable failure into total loss.
+      // EPERM/EEXIST here means the destination was never touched — propagate
+      // as-is rather than unlinking first, which risks losing both copies.
       if (!isWindows() || (code !== "EPERM" && code !== "EEXIST")) {
         throw new Error(`secure-file: failed to save ${path} — the new data is intact at ${tmp}: ${(err as Error).message}`);
       }
 
-      // Windows renameSync refuses to replace an existing file, so there is
-      // no way to avoid a brief window with neither name pointing at the old
-      // file. If either step here fails, the temp file is left in place
-      // (never deleted) and named in the error, rather than risking both
-      // copies being gone.
+      // Windows renameSync refuses to replace an existing file, leaving a
+      // brief window with neither name valid. On failure here, the temp file
+      // is left in place (named in the error) rather than risking both copies.
       try {
         unlinkSync(path);
         renameSync(tmp, path);

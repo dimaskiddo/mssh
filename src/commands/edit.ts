@@ -42,14 +42,16 @@ export async function pickHost(hosts: Host[]): Promise<{ host: Host; pattern: st
     fieldPrompt(HOST_ALIAS_LABEL),
     patterns.map((n) => ({ name: n, value: n })),
   );
+  // pattern came from connectableNames' glob-filter; findHost uses hostHasName's
+  // exact includes — two independent rules nothing forces to agree, hence this
+  // guard against a crash on picked.host if they diverge.
   const host = findHost(hosts, pattern);
   return host === undefined ? undefined : { host, pattern };
 }
 
-// proxyJump's picker offers no way to leave the field untouched (unlike the
-// text prompts below, which prefill the current value as the default) —
-// KEEP distinguishes "leave as-is" from "(none)", which both would
-// otherwise resolve to the same undefined.
+// proxyJump's picker has no default-prefill like the text prompts below, so
+// KEEP distinguishes "leave as-is" from "(none)" — both would otherwise
+// resolve to the same undefined.
 const KEEP = Symbol("keep");
 
 // Extracted so the port-vs-text dispatch is covered directly by tests

@@ -1,34 +1,13 @@
 import { test, expect, spyOn } from "bun:test";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import * as nodeOs from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import {
-  expandHome,
-  toDisplayPath,
-  parseEnvText,
-  pickSettings,
-  configPath,
-  selectStoredPassword,
-  loadSettingsFrom,
-  msshRootDir,
-  runDir,
-  keysDir,
-  defaultEncConfigPath,
-  pickHomeDir,
-  migrateLegacyConfigFrom,
-} from "../src/app-config";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { toDisplayPath, configPath, runDir, keysDir, defaultEncConfigPath, migrateLegacyConfigFrom } from "../src/app-config";
+import { expandHome, parseEnvText, pickSettings, selectStoredPassword, loadSettingsFrom, msshRootDir, pickHomeDir } from "../src/internal";
+import { withScratchDir as scratch } from "./helpers";
 
-// loadSettingsFrom takes explicit paths, so precedence/error-handling can be
-// exercised against a scratch dir instead of the real home directory.
-function withScratchDir(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "mssh-app-config-test-"));
-  try {
-    fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-app-config-test-", fn);
 
 test("expandHome expands a bare ~ to the home directory", () => {
   expect(expandHome("~")).toBe(homedir());
@@ -242,8 +221,7 @@ test("loadSettingsFrom throws a sanitized error on malformed config.yaml, never 
   withScratchDir((dir) => {
     const yamlPath = join(dir, "config.yaml");
     const envPath = join(dir, ".env");
-    // Invalid YAML: unbalanced flow-mapping brackets, with a plaintext-looking
-    // password on the same line the parser would otherwise quote in its error.
+    // Invalid YAML, with a plaintext-looking password on the same line.
     writeFileSync(yamlPath, "MSSH_PASSWORD: [hunter2\n");
 
     let thrown: unknown;

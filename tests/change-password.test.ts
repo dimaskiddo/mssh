@@ -1,19 +1,12 @@
 import { test, expect } from "bun:test";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-import { changePassword } from "../src/commands/change-password";
+import { readFileSync } from "node:fs";
 import { loadHosts, loadRaw, saveHosts } from "../src/store";
 import { parse } from "../src/ssh-config";
+import { changePassword, reseal } from "../src/internal";
+import { withScratchDirAsync as scratch } from "./helpers";
 
-async function withScratchDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "mssh-change-password-test-"));
-  try {
-    await fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withScratchDir = (fn: (dir: string) => Promise<void>): Promise<void> => scratch("mssh-change-password-test-", fn);
 
 const SAMPLE_TEXT = `Host myserver
   HostName 1.2.3.4
@@ -26,7 +19,7 @@ test("changePassword with the wrong current password throws and leaves the file 
     saveHosts(path, parse(SAMPLE_TEXT), "correct-horse");
     const before = readFileSync(path);
 
-    await expect(changePassword(path, "wrong-password", "new-password")).rejects.toThrow();
+    expect(() => changePassword(path, "wrong-password", "new-password")).toThrow();
     expect(readFileSync(path)).toEqual(before);
   });
 });
@@ -50,7 +43,20 @@ test("changePassword refuses to re-key when the new password equals the current 
     saveHosts(path, parse(SAMPLE_TEXT), "correct-horse");
     const before = readFileSync(path);
 
-    await expect(changePassword(path, "correct-horse", "correct-horse")).rejects.toThrow(
+    expect(() => changePassword(path, "correct-horse", "correct-horse")).toThrow(
+      "New password is the same as the current one.",
+    );
+    expect(readFileSync(path)).toEqual(before);
+  });
+});
+
+test("reseal refuses to re-key when the new password equals the current one, without writing", async () => {
+  await withScratchDir(async (dir) => {
+    const path = join(dir, "config");
+    saveHosts(path, parse(SAMPLE_TEXT), "correct-horse");
+    const before = readFileSync(path);
+
+    expect(() => reseal(path, SAMPLE_TEXT, "correct-horse", "correct-horse")).toThrow(
       "New password is the same as the current one.",
     );
     expect(readFileSync(path)).toEqual(before);

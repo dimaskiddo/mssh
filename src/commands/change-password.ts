@@ -10,16 +10,21 @@ import { passwordsMatch, isValidPassword } from "./setup";
 import { requireExistingConfig } from "./require-config";
 import { fatal } from "../exit";
 
-// Verifies currentPassword against the file on disk, then re-seals it under
-// newPassword. No prompting, no process.exit — the fs/crypto core, testable
-// the same way store.ts's own saveHosts/loadRaw are, with real scratch files.
-// loadRaw's opaque error (wrong password vs. corrupted file) surfaces as-is.
-export async function changePassword(path: string, currentPassword: string, newPassword: string): Promise<void> {
-  const raw = loadRaw(path, currentPassword);
+// Re-seals already-decrypted plaintext under newPassword. Split from
+// changePassword so runChangePassword's verification-step loadRaw is reused
+// instead of decrypting twice — scrypt is the dominant cost of this command.
+export function reseal(path: string, raw: string, currentPassword: string, newPassword: string): void {
   if (newPassword === currentPassword) {
     throw new Error("New password is the same as the current one.");
   }
   saveHosts(path, parse(raw), newPassword);
+}
+
+// Verifies currentPassword against disk, then re-seals under newPassword. No
+// prompting, no process.exit — testable with real scratch files the same way
+// store.ts's saveHosts/loadRaw are. loadRaw's opaque error surfaces as-is.
+export function changePassword(path: string, currentPassword: string, newPassword: string): void {
+  reseal(path, loadRaw(path, currentPassword), currentPassword, newPassword);
 }
 
 export async function runChangePassword(): Promise<void> {
@@ -34,10 +39,12 @@ export async function runChangePassword(): Promise<void> {
   // someone at your terminal re-key your config without entering it.
   const current = await resolvePassword(loaded, { forcePrompt: true });
 
-  // Verify current before collecting the new password twice — otherwise a
-  // wrong current password is only discovered after two more prompts.
+  // Verify current before collecting the new password twice, or a wrong
+  // current password is only discovered after two more prompts. Plaintext is
+  // kept (not re-derived), so reseal() below is the only other scrypt cost.
+  let raw: string;
   try {
-    loadRaw(path, current);
+    raw = loadRaw(path, current);
   } catch (err) {
     fatal(err instanceof Error ? err.message : String(err));
   }
@@ -53,7 +60,7 @@ export async function runChangePassword(): Promise<void> {
   }
 
   try {
-    await changePassword(path, current, next);
+    reseal(path, raw, current, next);
   } catch (err) {
     fatal(err instanceof Error ? err.message : String(err));
   }

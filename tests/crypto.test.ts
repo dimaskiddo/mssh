@@ -46,7 +46,6 @@ test("open rejects a payload with an unrecognized version byte", () => {
 });
 
 test("a payload truncated below header length throws the length error, not UnsupportedVersionError", () => {
-  // Length check runs before the version check.
   const tooShort = Buffer.alloc(HEADER_LENGTH - 1);
   tooShort[0] = 1;
   let thrown: unknown;

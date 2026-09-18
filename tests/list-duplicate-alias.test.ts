@@ -1,9 +1,6 @@
-// Separate file from list.test.ts: mocking app-config requires
-// mock.module() to run before list.ts is ever imported (see
-// connect-spawn.test.ts's header comment), but list.test.ts already
-// statically imports "../src/commands/list" for its hostChoices tests.
-// Only app-config is mocked here — store.ts is left real, fed a real
-// seal()'d duplicate-alias config, same reasoning as connect-spawn.test.ts.
+// Separate file from list.test.ts: mock.module() must run before list.ts is
+// imported (see connect-spawn.test.ts), which list.test.ts's own static
+// import already precludes. Only app-config is mocked; store.ts stays real.
 import { test, expect, mock, spyOn, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

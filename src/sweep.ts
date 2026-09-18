@@ -1,12 +1,6 @@
 // Best-effort start-of-run cleanup for files a killed mssh process leaves
-// behind. writeSecureAtomic's own process.on("exit") net (secure-file.ts)
-// only fires on a graceful shutdown — SIGKILL, SIGQUIT/SIGABRT, and an OOM
-// kill still leave orphans that no running process will ever clean up, and
-// they only become visible on some *later* invocation, which is why this
-// runs at start-of-run rather than at exit. connect.ts's run-dir temp
-// configs are plaintext; store.ts's config-directory .tmp-* siblings are
-// sealed ciphertext under whatever password wrote them — clutter removal
-// either way, not a secrecy fix.
+// behind. SIGKILL/OOM skip secure-file.ts's own exit-time cleanup entirely, and
+// orphans only become visible on some later run — hence start-of-run, not at-exit.
 import { existsSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
@@ -22,9 +16,7 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-// Pure so "skip a file whose pid is live" is unit-testable without real
-// processes or a filesystem. pidOf returning undefined means the name
-// carries no pid to check — always stale.
+// pidOf returning undefined means the name carries no pid to check — always stale.
 export function staleNames(
   names: string[],
   pidOf: (name: string) => number | undefined,
@@ -58,14 +50,14 @@ function sweepDir(dir: string, matches: (name: string) => boolean, pidOf: (name:
   try {
     names = readdirSync(dir);
   } catch {
-    return; // best-effort; a listing failure here is not this function's problem
+    return; // best-effort
   }
 
   for (const name of staleNames(names.filter(matches), pidOf, isPidAlive)) {
     try {
       unlinkSync(join(dir, name));
     } catch {
-      // best-effort; a concurrent delete or permission error is not fatal here
+      // best-effort
     }
   }
 }

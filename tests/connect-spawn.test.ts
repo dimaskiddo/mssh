@@ -1,18 +1,6 @@
-// connectWithRaw owns connect.ts's temp-config lifetime (see the header
-// comment there): the plaintext file must survive until ssh has actually
-// exited, then be gone. It's shared by runConnect and the bare-`mssh`
-// picker (list.ts's runListConnect), so it's exercised directly here rather
-// than through either caller. Exercising this without spawning a real ssh
-// process needs a fake ChildProcess and app-config redirected into a scratch
-// directory, wired through the SpawnFn seam.
-//
-// Only app-config is mocked (paths + password) — store.ts is left real,
-// fed a real seal()'d file, deliberately. mock.module() replaces a module in
-// Bun's shared registry for the whole test run, not just this file: an
-// earlier version of this test also mocked store and it broke store.test.ts,
-// whose own static import bound to the mock before this file's afterAll
-// could restore it (test files load before any test runs). Fewer mocked
-// modules is the actual fix, not a restore hook.
+// Exercises connectWithRaw (shared by runConnect and list.ts's picker) with a
+// fake ChildProcess, mocking only app-config — store.ts stays real, fed a real
+// seal()'d file — since mock.module() mutates Bun's shared module registry.
 import { test, expect, mock, spyOn, afterAll } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
@@ -124,12 +112,12 @@ test("temp config is removed even when spawning ssh itself fails", async () => {
 });
 
 test("connectWithRaw rejects -F itself, so no caller (runConnect or the bare-mssh picker) can bypass the guard", async () => {
-  await expect(connectWithRaw(sealedRaw, ["web1", "-F", "/tmp/other"])).rejects.toThrow(/refusing to pass -F/);
+  expect(() => connectWithRaw(sealedRaw, ["web1", "-F", "/tmp/other"])).toThrow(/refusing to pass -F/);
   expect(tempFilesIn(scratchRunDir).length).toBe(0);
 });
 
 test("connectWithRaw refuses a target matching no configured alias, instead of silently dropping its ProxyJump", async () => {
-  await expect(connectWithRaw(sealedRaw, ["typo-host"])).rejects.toThrow(
+  expect(() => connectWithRaw(sealedRaw, ["typo-host"])).toThrow(
     /"typo-host" is not a configured host alias/,
   );
   expect(tempFilesIn(scratchRunDir).length).toBe(0);

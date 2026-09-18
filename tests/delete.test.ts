@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { findDependents } from "../src/commands/delete";
 import type { Host } from "../src/ssh-config";
+import { findDependents } from "../src/internal";
 
 function host(overrides: Partial<Host>): Host {
   return { names: ["web1"], extras: [], ...overrides };

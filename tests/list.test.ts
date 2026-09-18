@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { hostChoices } from "../src/commands/list";
 import type { Host } from "../src/ssh-config";
+import { hostChoices } from "../src/internal";
 
 function host(overrides: Partial<Host>): Host {
   return { names: ["web1"], extras: [], ...overrides };

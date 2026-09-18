@@ -1,17 +1,11 @@
 import { test, expect } from "bun:test";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
-import { isPidAlive, staleNames, cfgPid, tmpPid, sweepOrphanedTempFiles } from "../src/sweep";
+import { writeFileSync, readdirSync, mkdirSync } from "node:fs";
+import { sweepOrphanedTempFiles } from "../src/sweep";
+import { isPidAlive, staleNames, cfgPid, tmpPid } from "../src/internal";
+import { withScratchDir as scratch } from "./helpers";
 
-function withScratchDir(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "mssh-sweep-test-"));
-  try {
-    fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-sweep-test-", fn);
 
 // A pid guaranteed not to exist: max pid space is far below this on every
 // real OS, and it will never collide with a live process.

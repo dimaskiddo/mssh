@@ -11,16 +11,13 @@ import { saveHosts } from "../store";
 import { fieldPrompt, PASSWORD_SET_LABEL, PASSWORD_CONFIRM_LABEL } from "../field-labels";
 import { fatal } from "../exit";
 
-// Pure so the "don't overwrite" and "typo protection" rules are unit-testable
-// without touching fs/prompts.
 export function passwordsMatch(a: string, b: string): boolean {
   return a === b;
 }
 
-// seal/open round-trip fine on "" and pickSettings discards an empty
-// MSSH_PASSWORD, so Enter-Enter here would create a config keyed on the
-// empty string that can never again be reopened via a stored password.
-// Existing empty-password configs still open — this only gates new ones.
+// seal/open round-trips fine on "" and pickSettings discards an empty
+// MSSH_PASSWORD, so Enter-Enter would create a config keyed on "" that can
+// never be reopened via a stored password. Existing empty-password configs still open.
 export function isValidPassword(password: string): boolean {
   return password.length > 0;
 }
@@ -48,17 +45,15 @@ export async function runSetup(): Promise<void> {
     fatal("Passwords do not match.");
   }
 
-  // dirname(path), not msshRootDir(): with a custom MSSH_CONFIG_PATH pointing
-  // outside ~/.mssh, locking down ~/.mssh here leaves the config's actual
-  // directory unlocked-down and, if it doesn't exist yet, saveHosts below
-  // fails with a bare ENOENT after two password prompts.
+  // dirname(path), not msshRootDir(): a custom MSSH_CONFIG_PATH outside
+  // ~/.mssh would otherwise leave the config's actual directory unlocked-down,
+  // and saveHosts below would fail with a bare ENOENT after two password prompts.
   ensureSecureDir(dirname(path));
 
   try {
     // exclusive: true — the existsSync check above sits before two password
-    // prompts, so a concurrent `mssh setup` racing this one is a real TOCTOU;
-    // this is the atomic guard, the earlier check is just the fast, friendly
-    // path for the common case.
+    // prompts, so a concurrent `mssh setup` is a real TOCTOU; this is the
+    // atomic guard, the earlier check just the fast, friendly common-case path.
     saveHosts(path, [], passwordFirst, { exclusive: true });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {

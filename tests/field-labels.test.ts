@@ -8,10 +8,10 @@ import {
   PASSWORD_SET_LABEL,
   PASSWORD_CONFIRM_LABEL,
   CONNECT_TO_LABEL,
-  ALIGNED_LABELS,
   fieldPrompt,
 } from "../src/field-labels";
 import type { ModeledField } from "../src/ssh-config";
+import { ALIGNED_LABELS } from "../src/internal";
 
 test("fieldPrompt puts the colon at the same column for every aligned label", () => {
   const columns = new Set(ALIGNED_LABELS.map((label) => fieldPrompt(label).indexOf(":")));

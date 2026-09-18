@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { forwardsTermAndHup, tempConfigName, rejectedFlags, childExitCode } from "../src/commands/connect";
+import { tempConfigName } from "../src/commands/connect";
+import { forwardsTermAndHup, rejectedFlags, childExitCode } from "../src/internal";
 
 test("forwardsTermAndHup is true on POSIX platforms", () => {
   expect(forwardsTermAndHup("linux")).toBe(true);
@@ -92,6 +93,10 @@ test("rejectedFlags still rejects -o PermitLocalCommand=yes, which enables Local
 
 test("rejectedFlags still rejects a bare -o PermitLocalCommand with no value", () => {
   expect(rejectedFlags(["myhost", "-o", "PermitLocalCommand"])).toBe("-o");
+});
+
+test("rejectedFlags refuses a quoted PermitLocalCommand value — the argv surface does not decode quotes, unlike parse()", () => {
+  expect(rejectedFlags(["myhost", '-oPermitLocalCommand="no"'])).toBe('-oPermitLocalCommand="no"');
 });
 
 test("childExitCode returns the child's exit code when it exited normally", () => {

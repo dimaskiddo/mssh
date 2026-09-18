@@ -1,10 +1,6 @@
-// `mssh config add`: prompts for a new host's connection details, then two
-// explicit gates — does this host need a jump host (bastion), and if so
-// should a private key be pulled from THAT bastion to authenticate to the
-// new host (ProxyJump requires the key to be read locally, not on the
-// bastion). Answering no to the first gate makes it a plain host.
-// requireSsh() is only called inside the opt-in key-extraction branch — a
-// plain add (no jump host) needs no ssh binary at all.
+// `mssh config add`: prompts for a new host, with two gates — needs a jump
+// host? and if so, pull a key from it (ProxyJump reads the key locally, not
+// on the bastion)? requireSsh() runs only inside that opt-in key-pull branch.
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,8 +29,8 @@ import { FIELD_LABELS, HOST_ALIAS_LABEL, KEY_PULL_LABEL, fieldPrompt } from "../
 import { requireExistingConfig } from "./require-config";
 import { fatal } from "../exit";
 
-// Names index.ts dispatches on before ever reaching runConnect — a host with
-// one of these names would be silently unreachable via `mssh <name>`.
+// Names index.ts dispatches on before reaching runConnect — a host with one
+// of these would be silently unreachable via `mssh <name>`.
 const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-password", "-h", "--help", "--version"]);
 
 // A hung remote in listRemoteKeys/downloadRemoteKey would otherwise block in
@@ -53,7 +49,7 @@ export function defaultUsername(): string {
   }
 }
 
-export type NewHostFields = {
+type NewHostFields = {
   name: string;
   hostname: string;
   port: string;
@@ -74,10 +70,6 @@ export function buildNewHost(fields: NewHostFields): Host {
   };
 }
 
-// Injects `-F <tempConfigPath>` ahead of the ssh target, so ssh resolves the
-// new host's connection details from the short-lived temp config instead of
-// the real (still-unsaved) one. Keeps remote-keys.ts's RemoteRunner seam
-// completely unchanged.
 export function tempConfigRunner(tempConfigPath: string, sshPath: string): RemoteRunner {
   return (sshTarget, remoteArgv) => {
     const result = spawnSync(sshPath, ["-F", tempConfigPath, sshTarget, ...remoteArgv], {
@@ -93,30 +85,19 @@ export function tempConfigRunner(tempConfigPath: string, sshPath: string): Remot
   };
 }
 
-// Reaches the JUMP host directly (not the new host — a jump host has no
-// ProxyJump of its own, so a single-host temp config resolves it on its
-// own) and offers to pull a private key from its ~/.ssh into keysDir().
-// Returns the pulled key's local path, meant to become the new host's
-// identityFile: ProxyJump authenticates to the far side of the tunnel with a
-// key read LOCALLY, which is exactly why it has to be fetched off the
-// bastion first — this is a different key from whatever authenticates to
-// the bastion itself (DEFAULT_SSH_KEY_PATH), so it always takes precedence
-// here. Returns undefined if no keys are found, none is selected, or an
-// overwrite is declined; only requireSsh()'s own guidance-and-exit is fatal.
+// Reaches the jump host directly and offers to pull a private key from its
+// ~/.ssh into keysDir(). ProxyJump authenticates with a key read LOCALLY,
+// which is why it must be fetched off the bastion first, not used from there.
 async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<string | undefined> {
   const sshPath = requireSsh();
 
   ensureSecureDir(runDir());
   const tmpPath = join(runDir(), tempConfigName(process.pid, randomBytes(8).toString("hex")));
-  // listRemoteKeys and downloadRemoteKey are two separate ssh invocations to
-  // the same host; without a shared control connection, each re-runs the
-  // full auth handshake — twice the MFA prompts for one logical operation.
+  // Shared control connection avoids re-running the full auth handshake (and MFA) twice.
   const controlPath = join(runDir(), `cm-${randomBytes(8).toString("hex")}`);
   const runner = tempConfigRunner(tmpPath, sshPath);
 
-  // Safety net for a SIGTERM/SIGHUP arriving while suspended at a prompt
-  // below: Node's default disposition skips the finally block that would
-  // otherwise unlink this temp config (mirrors connect.ts's net).
+  // Safety net for a signal arriving mid-prompt, which would skip the finally block below (mirrors connect.ts).
   let cleaned = false;
   const cleanup = (): void => {
     if (cleaned) return;
@@ -124,12 +105,12 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
     try {
       spawnSync(sshPath, ["-S", controlPath, "-O", "exit", jumpAlias], { timeout: REMOTE_COMMAND_TIMEOUT_MS });
     } catch {
-      // best-effort; ControlPersist's timeout reaps the socket regardless
+      // best-effort
     }
     try {
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
     } catch {
-      // best-effort; nothing more useful to do at exit time
+      // best-effort
     }
   };
   process.on("exit", cleanup);
@@ -220,9 +201,7 @@ export async function runAdd(): Promise<void> {
     })
   ).trim();
 
-  // Threads both the chosen Host block and the specific pattern the user
-  // picked (a multi-pattern jump host offers several) through to
-  // extractJumpHostKey and into the new host's ProxyJump value.
+  // Threads the chosen host and picked pattern through to extractJumpHostKey and the new host's ProxyJump.
   let jumpSelection: { host: Host; pattern: string } | undefined;
 
   const needsJumpHost = await promptConfirm(`Does this host require a ${FIELD_LABELS.proxyJump}?`, {
@@ -239,6 +218,7 @@ export async function runAdd(): Promise<void> {
       fieldPrompt(FIELD_LABELS.proxyJump),
       eligiblePatterns.map((n) => ({ name: n, value: n })),
     );
+    // Same independent-matching-rules guard as edit.ts's picker — graver here since this is sealed to disk.
     const host = eligibleJumpHosts.find((h) => hostHasName(h, pattern));
     if (host !== undefined) jumpSelection = { host, pattern };
   }
@@ -254,9 +234,7 @@ export async function runAdd(): Promise<void> {
     }
   }
 
-  // Only asked when the jump branch produced nothing — a pulled key IS the
-  // identity file, so asking for one as well would make the user answer a
-  // question whose result is then discarded.
+  // Only asked when the jump branch produced nothing — a pulled key IS the identity file.
   let identityFile = pulledKeyPath;
   if (identityFile === undefined) {
     identityFile = (
@@ -273,9 +251,7 @@ export async function runAdd(): Promise<void> {
   try {
     saveHosts(path, updatedHosts, password);
   } catch (err) {
-    // pulledKeyPath was written to disk well before this point; a save
-    // failure here must not leave it unmentioned, or it sits as an orphan
-    // the user never knows to clean up (or reuse) by hand.
+    // pulledKeyPath was already written to disk; a save failure must not leave it unmentioned.
     if (pulledKeyPath !== undefined) {
       console.error(`Note: the key pulled from the jump host was saved at ${pulledKeyPath} even though the host was not added.`);
     }

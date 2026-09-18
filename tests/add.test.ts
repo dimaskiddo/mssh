@@ -2,9 +2,8 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { buildNewHost, tempConfigRunner, defaultUsername, validateNewAlias } from "../src/commands/add";
 import { hostsWithoutProxyJump, type Host } from "../src/ssh-config";
-import { resolveSsh } from "../src/ssh-binary";
+import { buildNewHost, tempConfigRunner, defaultUsername, validateNewAlias, resolveSsh } from "../src/internal";
 
 test("buildNewHost keeps required name and treats blank optional fields as undefined", () => {
   const host = buildNewHost({

@@ -1,7 +1,8 @@
 import { test, expect } from "bun:test";
-import { findHost, FIELD_CHOICES, validateFieldValue } from "../src/commands/edit";
+import { findHost } from "../src/commands/edit";
 import { FIELD_LABELS } from "../src/field-labels";
 import type { Host, ModeledField } from "../src/ssh-config";
+import { FIELD_CHOICES, validateFieldValue } from "../src/internal";
 
 function host(overrides: Partial<Host>): Host {
   return { names: ["web1"], extras: [], ...overrides };

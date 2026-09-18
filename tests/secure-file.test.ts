@@ -1,17 +1,11 @@
 import { test, expect } from "bun:test";
-import { tmpdir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { writeSecure, writeSecureAtomic, ensureSecureDir, type CommandRunner } from "../src/secure-file";
+import { withScratchDir as scratch } from "./helpers";
 
-function withScratchDir(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "mssh-secure-file-test-"));
-  try {
-    fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-secure-file-test-", fn);
 
 // Forces the win32 branch for the duration of fn, regardless of the real OS,
 // so the icacls path is exercised from Linux dev machines too.

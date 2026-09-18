@@ -1,9 +1,5 @@
-// Reaches into a remote jump host's ~/.ssh directory (over an already
-// established ssh connection to that host) to list and download key files.
-// Every remote call is an argv array handed to spawnSync, never a shell
-// string built by us — the only place shell-string risk could sneak back in
-// is a downloaded filename, hence the strict allowlist below. Narrow module:
-// no prompting, no UI, no path-joining beyond what's described here.
+// Reaches a remote jump host's ~/.ssh over an existing ssh connection to list
+// and download key files. Every remote call is an argv array, never a shell string.
 import { unlinkSync, existsSync } from "node:fs";
 import { writeSecure } from "./secure-file";
 
@@ -12,11 +8,8 @@ export type RemoteRunner = (
   remoteArgv: string[],
 ) => { status: number | null; stdout: Buffer; stderr: string; error?: Error };
 
-// No default runner: this module has no requireSsh() of its own (the caller
-// already gated it and resolved the absolute ssh path), so a runner bound to
-// that path — see add.ts's tempConfigRunner — must always be passed in
-// explicitly rather than this module falling back to a bare, PATH-searched
-// "ssh" spawn.
+// No default runner: this module has no requireSsh() of its own, so a runner
+// bound to the caller's resolved ssh path (see add.ts's tempConfigRunner) must always be passed in.
 
 // Load-bearing security control: must be checked before `filename` reaches
 // any remote command construction. Allowlist, not escaping. Bare-dot names
@@ -25,11 +18,8 @@ export function isValidKeyFilename(name: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(name) && !/^\.+$/.test(name);
 }
 
-// Suffix-match .pub: a public key can carry an arbitrary basename, only the
-// extension is fixed. Prefix-match known_hosts: catches rotated/backup
-// variants (known_hosts.old, known_hosts2), not just the exact name.
-// authorized_keys/config are exact-matched: fixed, single-purpose filenames,
-// so a prefix match would risk over-filtering something like config.bak.
+// Suffix-match .pub and prefix-match known_hosts (rotated/backup variants);
+// authorized_keys/config are exact-matched to avoid over-filtering something like config.bak.
 function isNonKeyFile(name: string): boolean {
   return name.endsWith(".pub") || name === "authorized_keys" || name === "config" || name.startsWith("known_hosts");
 }
@@ -41,14 +31,9 @@ const KEY_TYPE_BY_REMOTE_NAME: Record<string, string> = {
   id_dsa: "dsa",
 };
 
-// <jump-alias>_<type>.pem keeps a pulled key traceable to the host it came
-// from. remoteName is already isValidKeyFilename-checked by the caller, so
-// the fallback cannot introduce a path separator; a non-stock name keeps its
-// own basename rather than being labelled with a crypto type we did not
-// actually verify. jumpAlias is a Host alias out of the user's own config,
-// which isValidHostName permits "../../../../tmp/evil" through — checked
-// here with the same allowlist so it cannot become a path component under
-// keysDir(), rather than trusting it the way remoteName's caller already has.
+// <jump-alias>_<type>.pem keeps a pulled key traceable to its host. jumpAlias
+// comes from the user's own config and isValidHostName permits path-like
+// values through, so it's re-checked here with the same allowlist as remoteName.
 export function localKeyName(jumpAlias: string, remoteName: string): string {
   if (!isValidKeyFilename(jumpAlias)) {
     throw new Error(`invalid jump host alias for a local key filename: ${jumpAlias}`);
@@ -93,8 +78,6 @@ export function downloadRemoteKey(
     throw new Error(`invalid key filename: ${filename}`);
   }
 
-  // Safe now: filename is allowlist-validated, so no shell metacharacters
-  // can reach the remote command line.
   const result = runner(sshTarget, ["cat", `~/.ssh/${filename}`]);
   if (result.error || result.status !== 0) {
     throw new Error(`failed to download remote key ${filename} from ${sshTarget}: ${remoteFailureReason(result)}`);

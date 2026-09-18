@@ -23,9 +23,6 @@ function runOrExit(argv: string[]): void {
   }
 }
 
-// Mirrors the previous `$\`…\`.nothrow().text()` pattern: empty string on any
-// failure, no exception, no output printed (git plumbing output isn't for
-// the user, only its parsed result is).
 function captureOrEmpty(argv: string[]): string {
   const [cmd, ...args] = argv;
   if (!cmd) throw new Error("release: empty command");
@@ -55,9 +52,8 @@ if (!token) {
   process.exit(1);
 }
 
-// --exact-match (not --abbrev=0) so a release only ever builds from a commit
-// that IS a tag, not the nearest reachable one — otherwise an untagged
-// commit publishes binaries under a stale tag name.
+// --exact-match (not --abbrev=0): only builds from a commit that IS a tag,
+// not the nearest reachable one — else an untagged commit gets a stale tag name.
 if (!gitTag) {
   gitTag = captureOrEmpty(["git", "describe", "--tags", "--exact-match", "HEAD"]);
 }
@@ -154,9 +150,7 @@ for (const target of targets) {
   console.log(`✅ Created archive: ${archiveOutPath}`);
 }
 
-// A partial archive set must never reach GitHub Releases under a real tag —
-// the release is created as a draft below specifically so this check (and
-// any upload failure past it) can still abort before anyone sees it.
+// A partial archive set must never reach a public release; abort before the draft is even created.
 if (archivesCreated.length !== targets.length) {
   console.error(`❌ Error: only ${archivesCreated.length}/${targets.length} archives were created; aborting release.`);
   process.exit(1);
@@ -192,7 +186,7 @@ try {
   console.log(`📡 Connecting to GitHub API for repository: ${owner}/${repo}...`);
 
   console.log("📝 Generating changelog from git history...");
-  let changelog = "";
+  let changelog: string;
   const tags = captureOrEmpty(["git", "tag", "--sort=-v:refname"]).split("\n").filter(Boolean);
   const currentTagIndex = tags.indexOf(gitTag);
   if (currentTagIndex !== -1 && currentTagIndex < tags.length - 1) {
@@ -210,9 +204,8 @@ try {
     "User-Agent": "Bun-Release-Script",
   };
 
-  // The release stays invisible until every asset below has uploaded
-  // successfully; a failed upload leaves a draft, not a public release with
-  // missing assets.
+  // Created as a draft: invisible until every asset below uploads
+  // successfully, so a failed upload leaves a draft, not a broken public release.
   const releaseResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases`, {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },

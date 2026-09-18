@@ -1,21 +1,14 @@
 import { test, expect, mock } from "bun:test";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { loadRaw, loadHosts, saveHosts } from "../src/store";
 import { parse, withKeepAlive } from "../src/ssh-config";
 import type { Host } from "../src/ssh-config";
 import * as realCrypto from "../src/crypto";
 import { seal } from "../src/crypto";
+import { withScratchDir as scratch } from "./helpers";
 
-function withScratchDir(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "mssh-store-test-"));
-  try {
-    fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-store-test-", fn);
 
 const SAMPLE_TEXT = `Host myserver
   HostName 1.2.3.4
@@ -138,11 +131,8 @@ test("loadHosts on a sealed duplicate-bearing config returns both hosts without 
   });
 });
 
-// The two tests below mock crypto's open() and restore it in a finally, but
 // mock.module() mutates the shared module object rather than swapping it, so
-// any test after these that calls the real open() through the same binding
-// sees the last mock instead of a restore — keep every test exercising real
-// crypto (above) ordered before these two.
+// keep every test exercising real crypto (above) ordered before these two.
 test("loadRaw reports a scrypt resource error distinctly instead of folding it into wrong password", () => {
   withScratchDir((dir) => {
     const path = join(dir, "ssh_config.enc");
@@ -160,8 +150,7 @@ test("loadRaw reports a scrypt resource error distinctly instead of folding it i
     try {
       expect(() => loadRaw(path, "any-password")).toThrow(/resource error, not a wrong password/);
     } finally {
-      // mock.module() replaces the module in Bun's registry for the rest of the
-      // test run — restore it so later files/tests see the real crypto module.
+      // mock.module() mutates Bun's shared registry for the whole run — restore it (see connect-spawn.test.ts).
       mock.module("../src/crypto", () => realCrypto);
     }
   });

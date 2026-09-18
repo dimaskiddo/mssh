@@ -1,10 +1,6 @@
-// The password-routing rule (AGENTS.md: forcePrompt true only for bare mssh
-// and `config list`, false everywhere else) has exactly one enforcement
-// point, resolvePassword, but five call sites that must invoke it correctly.
-// Mocking app-config's resolvePassword to throw immediately, tagged with the
-// forcePrompt it was given, turns "did this call site get it right" into an
-// assertion without needing a real password prompt, home directory, or
-// encrypted config on disk.
+// resolvePassword is the one enforcement point for the forcePrompt split, but
+// five call sites must pass it correctly — mocking it to throw, tagged with the
+// forcePrompt it received, asserts that without a prompt, HOME, or real config.
 import { test, expect, mock, afterAll } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,18 +15,14 @@ class HaltForTest extends Error {
 
 // Every command under test now runs requireExistingConfig(path) — a real,
 // unmocked node:fs check — before ever reaching resolvePassword. Point it at
-// a real scratch file, sized past the crypto header (content otherwise
-// irrelevant), so that check passes instead of hitting the sandbox's
-// nonexistent ~/.mssh/config and process.exit(1)-ing for real.
+// a real scratch file, sized past the crypto header, so that check passes.
 const scratchDir = mkdtempSync(join(tmpdir(), "mssh-password-routing-test-"));
 const scratchConfigPath = join(scratchDir, "config");
 writeFileSync(scratchConfigPath, "x".repeat(64));
 
 // configPath is overridden explicitly, not left to the ...realAppConfig
-// spread: another test file's mock.module() for this same specifier may run
-// first (Bun evaluates all files' top-level code before any test body runs)
-// and mutate the shared module record in place, so a "real" import captured
-// after that point is already contaminated with the other file's overrides.
+// spread: another file's mock.module() for this specifier may run first (all
+// files' top-level code runs before any test body), contaminating a later "real" import.
 mock.module("../src/app-config", () => ({
   ...realAppConfig,
   loadSettings: () => ({ settings: { MSSH_CONFIG_PATH: scratchConfigPath }, sourcePath: undefined }),
@@ -47,9 +39,7 @@ const { runDelete } = await import("../src/commands/delete");
 const { runConnect } = await import("../src/commands/connect");
 const { runChangePassword } = await import("../src/commands/change-password");
 
-// mock.module() replaces the module in Bun's registry for the rest of the
-// test run, not just this file — must be undone or later files that import
-// the real app-config would see this fake instead.
+// mock.module() mutates Bun's shared registry for the whole run — restore it (see connect-spawn.test.ts).
 afterAll(() => {
   mock.module("../src/app-config", () => realAppConfig);
   rmSync(scratchDir, { recursive: true, force: true });

@@ -1,15 +1,7 @@
 // `mssh <host> [ssh flags...]`: decrypts the config to a temp file and execs
-// real ssh against it. The temp file MUST outlive the parent ssh process's
-// entire run, not just the spawn() call — see the header note below on why.
-//
-// ProxyJump: OpenSSH does not handle ProxyJump in-process. When the target
-// host has ProxyJump, ssh rewrites it into a ProxyCommand that re-execs the
-// ssh binary as a CHILD process, invoked with `-F <this same temp path>`.
-// That child does not start until the connection is actually being
-// established — well after spawn() below returns control to us. Deleting
-// the temp file right after spawn() would make that child ssh fail with a
-// missing config. So cleanup is wired to the parent ssh process's actual
-// exit (plus a process-exit safety net), never to the spawn() call itself.
+// real ssh against it. ProxyJump makes ssh re-exec itself as a CHILD process
+// with `-F <this same temp path>`, long after spawn() below returns — so
+// cleanup binds to the parent ssh process's exit, never to spawn() itself.
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
@@ -27,18 +19,14 @@ import {
   hostsForTarget,
   normalizeDirectiveKey,
   REFUSED_DIRECTIVES,
+  isPermitLocalCommandNo,
   type Host,
 } from "../ssh-config";
 import { requireExistingConfig } from "./require-config";
 import { fatal } from "../exit";
 
-// Pure: does this platform get SIGTERM/SIGHUP forwarding? Windows doesn't
-// support SIGTERM semantics the same way, and SIGHUP there kills the process
-// ~10s later regardless of handlers, so forwarding it is pointless/harmful.
-// This is a signal-forwarding concern, distinct from secure-file.ts's
-// permission-enforcement platform check (chmod vs icacls) and ssh-binary.ts's
-// install-guidance platform check — each module owns its own unrelated use
-// of process.platform.
+// Windows doesn't support SIGTERM semantics the same way, and SIGHUP there
+// kills the process ~10s later regardless of handlers — forwarding is pointless there.
 export function forwardsTermAndHup(platform: NodeJS.Platform): boolean {
   return platform !== "win32";
 }
@@ -49,18 +37,9 @@ export function tempConfigName(pid: number, randomSuffix: string): string {
   return `cfg-${pid}-${randomSuffix}`;
 }
 
-// ssh lets -F redirect the connection entirely, and an -o naming any
-// REFUSED_DIRECTIVES option make ssh run an arbitrary program or pull in an
-// arbitrary file — both would subvert the temp config we just wrote, so both
-// are refused. Handles bundled short flags (`-4F path`, `-4oProxyCommand=id`)
-// and an -o value separated by whitespace or a quoted name, not just `=`.
-// Same deny-list ssh-config.ts enforces on the config-file side, imported
-// rather than duplicated so the two surfaces cannot drift apart.
-//
-// Not a full getopt: an unrelated flag's separate value (e.g. `-p 2222`) is
-// never inspected, so a value-taking flag other than -F/-o can still swallow
-// the next token unnoticed. That's an accepted ceiling, not a gap in this
-// guard — it fails closed on the two flags that can actually redirect ssh.
+// ssh lets -F redirect the connection entirely, and an -o naming a
+// REFUSED_DIRECTIVES option can make it execute a program or load a file —
+// not a full getopt, but fails closed on the two flags that can redirect ssh.
 export function rejectedFlags(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
@@ -76,10 +55,8 @@ export function rejectedFlags(argv: string[]): string | undefined {
     if (name === undefined) continue;
     const lowerName = name.toLowerCase();
     if (!REFUSED_DIRECTIVES.has(lowerName)) continue;
-    // The only REFUSED_DIRECTIVES member that hardens rather than executes:
-    // =no disables LocalCommand outright, so it carries no more risk than
-    // omitting the flag. Same allowance as ssh-config.ts's parse() side.
-    if (lowerName === "permitlocalcommand" && parts?.[1]?.toLowerCase() === "no") continue;
+    // See isPermitLocalCommandNo (ssh-config.ts) — parts[1] is intentionally undecoded here.
+    if (isPermitLocalCommandNo(lowerName, parts?.[1])) continue;
     return arg;
   }
   return undefined;
@@ -101,24 +78,16 @@ export function childExitCode(code: number | null, signal: NodeJS.Signals | null
 // spawning a real ssh process.
 export type SpawnFn = (command: string, args: string[], options: { stdio: "inherit" }) => ChildProcess;
 
-// ssh's argv mixes flags, flag values and the target in any order (`mssh -G
-// myserver` is documented usage), and we deliberately do not reimplement
-// ssh's getopt to find the positional. Matching every argv token against the
-// configured aliases is enough: a token that is not an alias selects nothing,
-// and the worst case is including a host whose name you typed yourself.
-export function argvTargets(argv: string[], hosts: Host[]): string[] {
+// ssh's argv mixes flags and the target in any order; matching every token
+// against configured aliases avoids reimplementing ssh's own getopt.
+function argvTargets(argv: string[], hosts: Host[]): string[] {
   const names = new Set(hosts.flatMap((h) => h.names));
   return argv.filter((arg) => names.has(arg));
 }
 
-// Shared by runConnect and the bare-`mssh` picker (list.ts's runListConnect),
-// which already holds a decrypted config from building its host list and
-// must not prompt or decrypt a second time. rejectedFlags()/requireSsh()
-// live here, not in the caller, so every path that writes plaintext to disk
-// is guarded the same way regardless of how it got the raw config.
-// `hosts`, when passed, is used instead of re-parsing `raw` — the picker
-// already parsed it once to build its choice list.
-export async function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = spawn, hosts?: Host[]): Promise<void> {
+// Shared by runConnect and list.ts's bare-`mssh` picker, so every path that
+// writes plaintext to disk is guarded by rejectedFlags()/requireSsh() the same way.
+export function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = spawn, hosts?: Host[]): void {
   const rejected = rejectedFlags(argv);
   if (rejected !== undefined) {
     throw new Error(`refusing to pass ${rejected} through: it would override the managed config`);
@@ -143,19 +112,13 @@ export async function connectWithRaw(raw: string, argv: string[], spawnFn: Spawn
   };
   process.on("exit", cleanup); // portable safety net, covers writeSecure() failures too
 
-  // Scoped to only what this connection needs (the target plus its ProxyJump
-  // chain), not the whole decrypted config: this file sits in plaintext on
-  // disk for the life of the session, and the tool's whole premise is that
-  // hosts you're not touching stay encrypted at rest.
+  // Scoped to only the target plus its ProxyJump chain — this file sits in
+  // plaintext on disk for the session, and untouched hosts stay encrypted at rest.
   const allHosts = hosts ?? parse(raw);
   const targets = argvTargets(argv, allHosts);
 
-  // A target matching no configured alias yields an empty temp config: no
-  // HostName, no IdentityFile, and no ProxyJump — ssh falls back to plain DNS
-  // resolution and any bastion is skipped without a word. Heuristic, not full
-  // getopt: it names the first token that isn't a flag, which can misname a
-  // value-taking flag's argument (e.g. `-p 2222` when 2222 isn't itself the
-  // typo). Good enough to turn a silent bypass into a loud one.
+  // A target matching no alias silently drops its ProxyJump/bastion — this
+  // turns that into a loud failure. Heuristic: names the first non-flag token.
   if (targets.length === 0) {
     const candidate = argv.find((arg) => !arg.startsWith("-"));
     if (candidate !== undefined) {
@@ -177,17 +140,15 @@ export async function connectWithRaw(raw: string, argv: string[], spawnFn: Spawn
     process.on("SIGHUP", () => child.kill("SIGHUP"));
   }
 
-  // Same cleanup() as the process-exit net above, called early (as soon as
-  // ssh itself has actually exited) rather than waiting for our own process
-  // to unwind — cleanup() is idempotent so both firing is harmless.
+  // Called early (as soon as ssh exits) rather than waiting on process unwind;
+  // cleanup() is idempotent so both firing is harmless.
   child.on("exit", (code, signal) => {
     cleanup();
     process.exit(childExitCode(code, signal));
   });
 
-  // Genuine spawn failure only (e.g. ssh disappeared between requireSsh()'s
-  // check and this call) — no session was ever established, so cleaning up
-  // here can't race the ProxyJump re-exec case.
+  // Genuine spawn failure only — no session was ever established, so this
+  // can't race the ProxyJump re-exec case.
   child.on("error", (err) => {
     cleanup();
     fatal(`failed to run ssh: ${err.message}`);

@@ -7,25 +7,20 @@ import {
   deleteHost,
   hostsWithoutProxyJump,
   isValidFieldValue,
-  isValidHostName,
   isValidNewHostName,
   isValidPort,
   proxyJumpAliases,
   hostsForTarget,
   withKeepAlive,
-  KEEP_ALIVE_INTERVAL,
-  unquote,
   normalizeDirectiveKey,
-  decodeValue,
-  stripComment,
   hostLabel,
   hostHasName,
   connectableNames,
   duplicateAlias,
-  EXECUTING_DIRECTIVES,
   REFUSED_DIRECTIVES,
   type Host,
 } from "../src/ssh-config";
+import { isValidHostName, KEEP_ALIVE_INTERVAL, unquote, decodeValue, stripComment, EXECUTING_DIRECTIVES } from "../src/internal";
 
 const SAMPLE = `Host myserver
   HostName 1.2.3.4

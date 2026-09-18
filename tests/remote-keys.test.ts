@@ -1,18 +1,11 @@
 import { test, expect, mock } from "bun:test";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { isValidKeyFilename, listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../src/remote-keys";
-import { isValidHostName } from "../src/ssh-config";
+import { readFileSync, existsSync } from "node:fs";
+import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../src/remote-keys";
+import { isValidKeyFilename, isValidHostName } from "../src/internal";
+import { withScratchDir as scratch } from "./helpers";
 
-function withScratchDir(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "mssh-remote-keys-test-"));
-  try {
-    fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-remote-keys-test-", fn);
 
 test("isValidKeyFilename accepts typical key names", () => {
   expect(isValidKeyFilename("id_rsa")).toBe(true);

@@ -1,8 +1,6 @@
 #!/usr/bin/env bun
-// Entry point: `setup` and `config` are recognized only as the literal first
-// arg; bare `mssh` (no args) shows a selectable host list and connects;
-// everything else is a connect passthrough that injects the decrypted
-// config (see src/commands/connect.ts).
+// Entry point: `setup`/`config` are recognized only as the literal first arg;
+// bare `mssh` lists hosts; everything else passes through to connect.
 import { runSetup } from "./src/commands/setup";
 import { runList, runListConnect } from "./src/commands/list";
 import { runAdd } from "./src/commands/add";
@@ -18,6 +16,7 @@ import {
   migrateLegacyConfigFrom,
   runDir,
   toDisplayPath,
+  type Settings,
 } from "./src/app-config";
 import { sweepOrphanedTempFiles } from "./src/sweep";
 import { fatal } from "./src/exit";
@@ -38,12 +37,8 @@ Usage:
   mssh version, --version        show the version
   mssh --help, -h                show this help`;
 
-// Compatibility shim for the ssh_config.enc -> config rename. Only for the
-// default location: a custom MSSH_CONFIG_PATH was never affected by that
-// rename. Notice goes to stderr so it can't contaminate `config list`'s
-// machine-readable host listing. Remove a release or two after this ships.
-function migrateLegacyConfig(): void {
-  const { settings } = loadSettings();
+// ssh_config.enc -> config rename shim; stderr so it doesn't pollute `config list`'s output.
+function migrateLegacyConfig(settings: Settings): void {
   if (settings.MSSH_CONFIG_PATH !== undefined) return;
 
   const current = defaultEncConfigPath();
@@ -52,12 +47,7 @@ function migrateLegacyConfig(): void {
   }
 }
 
-// Runs once per invocation, same placement as migrateLegacyConfig(): cleans
-// up plaintext run-dir temp configs and sealed config-directory tmp files
-// orphaned by a killed mssh process — see sweep.ts for why this can't just
-// happen at exit time.
-function sweepTempFiles(): void {
-  const { settings } = loadSettings();
+function sweepTempFiles(settings: Settings): void {
   sweepOrphanedTempFiles(runDir(), dirname(configPath(settings)));
 }
 
@@ -71,8 +61,6 @@ function rejectExtraArgs(extra: string[]): void {
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
 
-  // Handled before any other dispatch: neither prompts for a password nor
-  // touches disk, unlike falling through to runConnect would.
   if (cmd === "--help" || cmd === "-h") {
     rejectExtraArgs(rest);
     console.log(USAGE);
@@ -86,8 +74,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  migrateLegacyConfig();
-  sweepTempFiles();
+  const { settings } = loadSettings();
+  migrateLegacyConfig(settings);
+  sweepTempFiles(settings);
 
   if (cmd === "setup") {
     rejectExtraArgs(rest);

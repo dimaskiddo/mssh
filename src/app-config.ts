@@ -14,12 +14,10 @@ export type Settings = {
 const SETTINGS_KEYS = ["DEFAULT_SSH_KEY_PATH", "MSSH_CONFIG_PATH", "MSSH_PASSWORD"] as const;
 const PATH_KEYS = new Set<(typeof SETTINGS_KEYS)[number]>(["DEFAULT_SSH_KEY_PATH", "MSSH_CONFIG_PATH"]);
 
-// Pure so the fallback order is unit-testable without mutating the real
-// environment. Absolute-only: a relative or empty candidate silently reroots
-// every ~/.mssh path onto the CWD, which is how a pulled key ends up recorded
-// as a relative IdentityFile that breaks on the next connect from elsewhere.
+// Absolute-only: a relative or empty candidate silently reroots every
+// ~/.mssh path onto the CWD, breaking a pulled key's IdentityFile elsewhere.
 export function pickHomeDir(candidates: Array<string | undefined>): string | undefined {
-  return candidates.find((c) => c !== undefined && c !== "" && isAbsolute(c));
+  return candidates.find((c) => c !== undefined && isAbsolute(c));
 }
 
 // os.homedir() returns "" when it cannot resolve a home (no HOME/USERPROFILE
@@ -37,11 +35,11 @@ export function msshRootDir(): string {
   return join(homeDir(), ".mssh");
 }
 
-export function envFilePath(): string {
+function envFilePath(): string {
   return join(msshRootDir(), ".env");
 }
 
-export function yamlFilePath(): string {
+function yamlFilePath(): string {
   return join(msshRootDir(), "config.yaml");
 }
 
@@ -67,17 +65,14 @@ export function configPath(settings: Settings): string {
   return settings.MSSH_CONFIG_PATH ?? defaultEncConfigPath();
 }
 
-// Only the leading form is special-cased, matching shell behavior.
 export function expandHome(inputPath: string): string {
   if (inputPath === "~") return homeDir();
   if (inputPath.startsWith("~/") || inputPath.startsWith("~\\")) return join(homeDir(), inputPath.slice(2));
   return inputPath;
 }
 
-// Renders an absolute path under the home directory back to `~/...` form, for
-// display in warnings. Display-only and called from warnIfNotPrivate's
-// best-effort path, so an unresolvable home falls back to the raw path
-// instead of throwing.
+// Renders an absolute path back to `~/...` form for display; falls back to
+// the raw path on an unresolvable home rather than throwing.
 export function toDisplayPath(absolutePath: string): string {
   let home: string;
   try {
@@ -130,7 +125,7 @@ export function parseEnvText(text: string): Record<string, string> {
 
 export function pickSettings(raw: unknown): Settings {
   const settings: Settings = {};
-  if (raw === null || raw === undefined || typeof raw !== "object") return settings;
+  if (raw === null || typeof raw !== "object") return settings;
   // A multi-document YAML file parses to an array, which the object check
   // above would otherwise accept and silently yield {} for every key.
   if (Array.isArray(raw)) {
@@ -158,21 +153,18 @@ export function pickSettings(raw: unknown): Settings {
 }
 
 // Decides which password (if any) resolvePassword should use without prompting.
-// Pure so the forcePrompt routing rule is unit-testable independent of file I/O.
 export function selectStoredPassword(settings: Settings, forcePrompt: boolean): string | undefined {
   if (forcePrompt) return undefined;
   return settings.MSSH_PASSWORD;
 }
 
-export type LoadedSettings = {
+type LoadedSettings = {
   settings: Settings;
   sourcePath: string | undefined; // which file was actually read, for the permission warning
 };
 
-// config.yaml wins over .env when both exist. Takes explicit paths so the
-// precedence rule and error handling are unit-testable without touching the
-// real home directory (homedir() is cached per-process, so env-var tricks
-// don't work for redirecting it in tests).
+// config.yaml wins over .env when both exist. Takes explicit paths so this
+// is testable without touching the real home directory (cached per-process).
 export function loadSettingsFrom(yamlPath: string, envPath: string): LoadedSettings {
   if (existsSync(yamlPath)) {
     // readFileSync stays outside the try: an I/O error (EACCES, EISDIR) is
@@ -202,23 +194,9 @@ export function loadSettings(): LoadedSettings {
   return loadSettingsFrom(yamlFilePath(), envFilePath());
 }
 
-// One-time move for configs created before the default was renamed to
-// `config`. Refuses to touch anything when both exist: the current file is
-// authoritative and the legacy one may be a deliberate backup, so clobbering
-// it could destroy the only copy of a config whose password the user still
-// has. A move, not a re-encrypt — the ciphertext is never read, no password
-// needed, and the existing mode carries over silently (no warning is raised
-// even if it's weaker than 0600 — warnIfNotPrivate only ever inspects the
-// settings file), which is why this bypasses secure-file.ts (that module
-// owns writes of new data; there is none here).
-//
 // linkSync+unlinkSync rather than renameSync: rename(2) replaces an existing
-// destination silently, so the existsSync check above is the only guard —
-// and this runs on every single invocation (index.ts), maximizing the race
-// window. link() fails with EEXIST if currentPath already exists (a
-// concurrent `mssh setup` between the check and here), closing the TOCTOU
-// instead of one process's legacy file clobbering the other's fresh config.
-// Returns whether a move happened, for the caller's notice.
+// destination silently, and this runs on every invocation — link() fails
+// with EEXIST instead, closing the TOCTOU race against a concurrent setup.
 export function migrateLegacyConfigFrom(legacyPath: string, currentPath: string): boolean {
   if (!existsSync(legacyPath) || existsSync(currentPath)) return false;
   try {
@@ -251,13 +229,9 @@ function warnIfNotPrivate(sourcePath: string): void {
   warnIfWorldOrGroupAccessible(dirname(sourcePath), "0700");
 }
 
-// Single point of password routing:
-// - forcePrompt: true  -> always hidden-prompt, MSSH_PASSWORD is never read
-// - forcePrompt: false -> use MSSH_PASSWORD if set, else hidden-prompt
-// Takes the caller's own loadSettings() result rather than reloading: every
-// caller already has it for configPath()/etc, and a second independent read
-// could in principle disagree with the first (a config.yaml edited between
-// the two calls).
+// Single point of password routing. Takes the caller's own loadSettings()
+// result rather than reloading — a second independent read could disagree
+// with the first if config.yaml was edited between the two calls.
 export async function resolvePassword(loaded: LoadedSettings, opts: { forcePrompt: boolean }): Promise<string> {
   const { settings, sourcePath } = loaded;
   const stored = selectStoredPassword(settings, opts.forcePrompt);

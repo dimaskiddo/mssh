@@ -1,9 +1,5 @@
-// index.ts's argv dispatch (--help/--version short-circuiting before any
-// prompt or disk write, and the config usage-error path) can only be
-// exercised faithfully as a real process: it's the entry point itself, not a
-// function anything imports. A hung stdin prompt would otherwise hang the
-// test forever, so a timeout plus asserting result.signal === null (proves
-// it exited on its own, not killed by the timeout) is the safety net.
+// index.ts's argv dispatch can only be exercised as a real process — it's the
+// entry point, not a function anything imports. Timeout + signal===null guards against a hung stdin prompt.
 import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";

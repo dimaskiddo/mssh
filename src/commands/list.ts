@@ -1,10 +1,6 @@
-// `mssh config list`: prints host aliases only. `mssh` (bare): same forced
-// prompt, but the list is a picker that connects to whichever alias is
-// selected — see runListConnect. Neither ever prints hostname/user/port:
-// this tool exists to keep those encrypted at rest, so they must not land in
-// terminal scrollback. Always forces an interactive password prompt
-// (forcePrompt: true) so a stray MSSH_PASSWORD can never silently dump the
-// host list; see app-config.ts's resolvePassword for the routing rule.
+// `mssh config list`: prints host aliases only, never hostname/user/port —
+// this tool exists to keep those encrypted at rest, out of terminal scrollback.
+// `mssh` (bare) is the same list as a picker that connects — see runListConnect.
 import { configPath, loadSettings, resolvePassword } from "../app-config";
 import { loadRaw } from "../store";
 import { parse, connectableNames, duplicateAlias, type Host } from "../ssh-config";
@@ -15,7 +11,6 @@ import { requireExistingConfig } from "./require-config";
 
 const NO_HOSTS_MESSAGE = "No hosts configured. Add one with 'mssh config add'.";
 
-// Pure so the picker's choice list is unit-testable without fs/crypto/prompting.
 // One entry per pattern (a "Host a b" block is two picks), filtered through
 // connectableNames so a glob or negation pattern is never itself pickable.
 export function hostChoices(hosts: Host[]): Array<{ name: string; value: string }> {

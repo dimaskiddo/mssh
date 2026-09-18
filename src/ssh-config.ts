@@ -1,16 +1,15 @@
 export type Host = {
-  names: string[]; // >= 1 ssh pattern, source order — a Host line can name several
+  names: string[];
   hostname?: string;
   port?: string;
   user?: string;
   identityFile?: string;
   proxyJump?: string;
-  extras: Array<{ key: string; value: string }>; // unmodeled directives, raw remainder verbatim (key spelling as written in source)
+  extras: Array<{ key: string; value: string }>;
 };
 
 export type ModeledField = "hostname" | "port" | "user" | "identityFile" | "proxyJump";
 
-// Keyed by lowercase for case-insensitive matching on parse.
 const MODELED_FIELDS: Record<string, ModeledField> = {
   hostname: "hostname",
   port: "port",
@@ -19,10 +18,9 @@ const MODELED_FIELDS: Record<string, ModeledField> = {
   proxyjump: "proxyJump",
 };
 
-// ssh executes these as programs. A config that arrives carrying one (hand
-// imported, hand edited) must not be able to turn `mssh <host>` into a
-// launcher for arbitrary binaries. Guard consumers use the derived
-// REFUSED_DIRECTIVES below, not this set directly — see there.
+// ssh executes these as programs; a hand-edited config carrying one must not
+// turn `mssh <host>` into a launcher for arbitrary binaries. Guard consumers
+// use the derived REFUSED_DIRECTIVES below, not this set directly.
 export const EXECUTING_DIRECTIVES = new Set([
   "proxycommand",
   "localcommand",
@@ -35,12 +33,9 @@ export const EXECUTING_DIRECTIVES = new Set([
   "match",
 ]);
 
-// Include pulls in an arbitrary file whose contents parse() never sees, which
-// reaches the same outcome as EXECUTING_DIRECTIVES indirectly. Kept as a
-// separate set (rather than folded into EXECUTING_DIRECTIVES) because its
-// mechanism is different — redirection, not execution — but it must be
-// refused on every surface EXECUTING_DIRECTIVES is, hence the derived union
-// below rather than a second copy.
+// Include pulls in an arbitrary file parse() never sees — same outcome as
+// EXECUTING_DIRECTIVES, different mechanism (redirection), kept separate but
+// refused on every surface via the derived union below, not a second copy.
 const CONFIG_REDIRECTING_DIRECTIVES = new Set(["include"]);
 
 export const REFUSED_DIRECTIVES: ReadonlySet<string> = new Set([
@@ -48,11 +43,15 @@ export const REFUSED_DIRECTIVES: ReadonlySet<string> = new Set([
   ...CONFIG_REDIRECTING_DIRECTIVES,
 ]);
 
-// These take the rest of the line raw: no comment-stripping (a literal `#`
-// is data, not a comment marker) and no quote/escape decoding. Three of the
-// four are in EXECUTING_DIRECTIVES and never reach here; RemoteCommand is
-// not, and lands in extras, so it must not be corrupted by token-mode rules
-// meant for single-word values.
+// Takes an already-decoded value — each caller owns its own decoding, since
+// parse(), assertSerializable() and rejectedFlags() legitimately differ on it.
+// Folding decoding in here would widen the argv surface this guards.
+export function isPermitLocalCommandNo(lowerKey: string, decodedValue: string | undefined): boolean {
+  return lowerKey === "permitlocalcommand" && decodedValue?.toLowerCase() === "no";
+}
+
+// Rest-of-line raw values: no comment-stripping, no quote/escape decoding —
+// RemoteCommand needs this even though it isn't in EXECUTING_DIRECTIVES.
 const REST_OF_LINE_DIRECTIVES = new Set(["proxycommand", "localcommand", "remotecommand", "knownhostscommand"]);
 
 // Rejects a value that would let serialize() emit a directive we didn't
@@ -62,14 +61,9 @@ export function isValidFieldValue(value: string): boolean {
   return !/[\n\r]/.test(value);
 }
 
-// OpenSSH (8.7+) escapes `\` and `"` with a backslash rather than rejecting
-// them; anything else that would otherwise need quoting (whitespace, `#`,
-// a literal quote character) is wrapped in one double-quoted token. Verified
-// against the real binary: `a b` -> `"a b"`, `/a"b` -> `"/a\"b"`, `#x` ->
-// `"#x"`, `a#b` -> `"a#b"` (unquoted `#` is only a comment at a token
-// boundary, so a bare value never needs quoting just for containing one),
-// `~/.ssh/k` stays bare. Quoting never interferes with `~` or `%h`/`%r`/`%p`
-// expansion.
+// OpenSSH (8.7+) escapes `\` and `"` rather than rejecting them; anything
+// else needing quoting (whitespace, `#`, a literal quote) is wrapped in one
+// double-quoted token. Quoting never interferes with `~`/`%h`/`%r`/`%p`.
 function formatValue(value: string): string {
   if (value !== "" && !/[\s#"'\\]/.test(value)) return value;
   return `"${value.replace(/[\\"]/g, "\\$&")}"`;
@@ -79,28 +73,17 @@ export function unquote(value: string): string {
   return value.length >= 2 && value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
 }
 
-// A directive keyword, unquoted and un-lowercased; undefined when the token
-// cannot be a real ssh_config keyword (every real one is alphanumeric), so a
-// line like `Pro"xy"Command` normalizes to nothing rather than to a string
-// that happens to miss the deny-list. Shared by parse() (a config-file key)
-// and connect.ts's rejectedFlags() (an -o option name) so both surfaces the
-// deny-list guards apply the exact same normalization.
+// Undefined when the token can't be a real ssh_config keyword — a quoted key
+// normalizes to nothing rather than slipping past the deny-list. Shared by
+// parse() and rejectedFlags() so both apply identical normalization.
 export function normalizeDirectiveKey(rawKey: string): string | undefined {
   const unquoted = unquote(rawKey);
   return /^[A-Za-z0-9]+$/.test(unquoted) ? unquoted : undefined;
 }
 
-// Splits a decoded, comment-stripped directive value into its
-// whitespace-separated tokens, each individually unquoted and unescaped —
-// OpenSSH's own strdelim() rules, confirmed against the real binary:
-// - `"` and `'` both toggle quoting and are never emitted themselves.
-// - `\` escapes the very next character only when it is one of \ " ' or a
-//   literal space (`a\b` -> `a\b`, `a\\b` -> `a\b`, `a\"b` -> `a"b`,
-//   `a\ b` -> `a b`, `a\tb` -> `a\tb` unchanged); otherwise the backslash is
-//   emitted literally and the next character is processed normally.
-// Returns undefined when a quote is never closed — ssh fatals on the whole
-// file for that; dropping just this line/value is strictly more
-// conservative and keeps serialize(parse(x)) total.
+// OpenSSH's own strdelim() rules, verified against the real binary: `"`/`'`
+// toggle quoting, `\` escapes only \ " ' or a literal space. Returns
+// undefined on an unterminated quote, keeping serialize(parse(x)) total.
 function decodeTokens(rest: string): string[] | undefined {
   const tokens: string[] = [];
   let token = "";
@@ -156,14 +139,9 @@ export function decodeValue(rest: string): string | undefined {
   return decodeTokens(rest)?.[0];
 }
 
-// Cuts a trailing, unquoted, token-boundary comment off a directive's raw
-// remainder. `#` starts a comment only when unquoted AND immediately
-// preceded by whitespace (or at the very start) — confirmed against the
-// real binary: `bob # c` -> `bob`, `bob#c` -> `bob#c` (no boundary),
-// `"bob"#c` -> `bob#c` (a closing quote is not whitespace, so the two
-// segments glue into one token), `"#x"` -> `#x` (quoted, never a comment).
-// Mirrors decodeTokens' own backslash/quote handling so the two agree on
-// what is escaped.
+// Cuts a trailing, unquoted, token-boundary comment off a raw remainder —
+// `#` starts a comment only when unquoted and preceded by whitespace (or at
+// the start). Mirrors decodeTokens' escape/quote handling so both agree.
 export function stripComment(rest: string): string {
   let quote: '"' | "'" | undefined;
   let boundary = true;
@@ -199,41 +177,29 @@ export function stripComment(rest: string): string {
   return rest;
 }
 
-// OpenSSH accepts space, tab, or `=` (with optional surrounding whitespace)
-// between a directive's key and value. The `=`-form alternative must be
-// tried first: `\s+` alone would also match the leading space of " = value"
-// and leave a literal "=" glued onto value.
-export function splitDirective(line: string): { key: string; rest: string } | undefined {
+// The `=`-form must be tried first: `\s+` alone would also match the leading
+// space of " = value" and leave a literal "=" glued onto value.
+function splitDirective(line: string): { key: string; rest: string } | undefined {
   const match = /^(\S+)(?:\s*=\s*|\s+)(\S.*)$/.exec(line);
   if (!match) return undefined;
   return { key: match[1] as string, rest: match[2] as string };
 }
 
-// Host aliases are ssh patterns matched on their own line; a name containing
-// whitespace serializes as multiple space-separated patterns (silently
-// claiming extra aliases), and an empty name serializes as a bare "Host"
-// line that fails to reparse as a Host line at all — its directives then
-// attach to whichever host precedes it in the file.
+// A name with whitespace serializes as multiple patterns; an empty name
+// serializes as a bare "Host" line whose directives attach to the prior host.
 export function isValidHostName(name: string): boolean {
   return name !== "" && !/\s/.test(name);
 }
 
-// The alias reaches three sinks with three different rules: config text
-// (unquoted), an ssh argv element (add.ts's jump-host spawns), and a
-// filename component (remote-keys.ts). This is the intersection of all
-// three, matching isValidKeyFilename's class deliberately — a leading "-" is
-// a flag to ssh, "*"/"?"/"!" silently claim other hosts' config, and "#" or a
-// quote does not survive its own round-trip. Applied only to newly typed
-// aliases; isValidHostName above stays the permissive rule for loading and
-// serializing configs that already exist.
+// Intersection of three sinks' rules (config text, ssh argv, filename) —
+// matches isValidKeyFilename's class. Applied only to newly typed aliases;
+// isValidHostName stays permissive for configs that already exist.
 export function isValidNewHostName(name: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(name) && !/^\.+$/.test(name) && !name.startsWith("-");
 }
 
-// ssh rejects anything outside 1-65535 at connect time, by which point the
-// value is already sealed into the encrypted config. Leading/trailing
-// whitespace and non-ASCII digits both reach ssh as "Bad port"; reject them
-// here instead of at connect time.
+// ssh rejects out-of-range ports only at connect time, after the value is
+// already sealed into the config — reject here instead.
 export function isValidPort(value: string): boolean {
   if (!/^[0-9]+$/.test(value)) return false;
   const port = Number(value);
@@ -268,20 +234,16 @@ export function parse(text: string): Host[] {
     const split = splitDirective(line);
     if (split === undefined) continue;
 
-    // A key that isn't a syntactically valid ssh_config keyword (e.g. a
-    // quoted or otherwise malformed token) can't be classified against any
-    // list below — including the deny-list — so the whole line is dropped
-    // rather than kept under a name nothing recognizes.
+    // An unclassifiable key (e.g. quoted or malformed) can't be checked
+    // against the deny-list, so the whole line is dropped instead.
     const key = normalizeDirectiveKey(split.key);
     if (key === undefined) continue;
     const lowerKey = key.toLowerCase();
 
     if (lowerKey === "host") {
       const patterns = decodeTokens(stripComment(split.rest));
-      // A Host line we can't represent ends the previous block just as Match
-      // does below: its directives belong to a host that no longer exists,
-      // so they must not fall through onto whichever host happened to
-      // precede it in the file.
+      // Ends the previous block just as Match does below — an unrepresentable
+      // Host line's directives must not fall through to the prior host.
       if (patterns === undefined || patterns.length === 0) {
         current = undefined;
         continue;
@@ -291,10 +253,8 @@ export function parse(text: string): Host[] {
       continue;
     }
 
-    // Nothing mssh models is a conditional directive, so nothing between a
-    // Match and the next Host may attach to the unconditional host that
-    // precedes it — stricter than ssh (which evaluates the condition), but
-    // ssh's own behavior here is not representable in this data model.
+    // mssh models no conditional directives, so nothing between Match and the
+    // next Host may attach to the host preceding it — stricter than ssh.
     if (lowerKey === "match") {
       current = undefined;
       continue;
@@ -306,8 +266,9 @@ export function parse(text: string): Host[] {
       // The only REFUSED_DIRECTIVES member that hardens rather than executes:
       // =no disables LocalCommand outright, so it carries no more risk than
       // omitting the directive. Only that exact value is let through.
-      if (lowerKey === "permitlocalcommand" && decodeValue(stripComment(split.rest))?.toLowerCase() === "no") {
-        current.extras.push({ key, value: stripComment(split.rest).trimEnd() });
+      const stripped = stripComment(split.rest);
+      if (isPermitLocalCommandNo(lowerKey, decodeValue(stripped))) {
+        current.extras.push({ key, value: stripped.trimEnd() });
       }
       continue; // otherwise dropped, not modeled — see REFUSED_DIRECTIVES
     }
@@ -326,10 +287,8 @@ export function parse(text: string): Host[] {
         if (value !== undefined) current[modeledField] = value;
       }
     } else {
-      // Unlike the five modeled fields, ssh's duplicate rule for extras is
-      // per-directive (some first-wins, some accumulate, e.g. IdentityFile)
-      // — so every occurrence is kept in source order and neither this
-      // parser nor serialize() needs to know which rule applies to which.
+      // ssh's duplicate rule for extras is per-directive (some first-wins,
+      // some accumulate) — every occurrence is kept in order regardless.
       current.extras.push({ key, value: stripComment(split.rest).trimEnd() });
     }
   }
@@ -372,8 +331,7 @@ function assertSerializable(host: Host): void {
       throw new Error(`invalid value for ${extra.key} on host "${hostLabel(host)}"`);
     }
     const lowerExtraKey = extra.key.toLowerCase();
-    const isPermitLocalCommandNo = lowerExtraKey === "permitlocalcommand" && decodeValue(extra.value)?.toLowerCase() === "no";
-    if (REFUSED_DIRECTIVES.has(lowerExtraKey) && !isPermitLocalCommandNo) {
+    if (REFUSED_DIRECTIVES.has(lowerExtraKey) && !isPermitLocalCommandNo(lowerExtraKey, decodeValue(extra.value))) {
       throw new Error(
         `refusing to write ${extra.key} on host "${hostLabel(host)}": it would make ssh execute a program or load an untracked file`,
       );
@@ -387,15 +345,9 @@ function assertSerializable(host: Host): void {
   }
 }
 
-// The first alias claimed by more than one Host block, or undefined when
-// every alias is unique. ssh merges same-named blocks per directive, so a
-// duplicate resolves to a host mssh cannot represent and never displays;
-// every mutation here is first-wins, making the later block permanently
-// unreachable. Exact, case-sensitive comparison deliberately: ssh's own
-// alias matching is case-sensitive, so "web1" and "WEB1" are distinct hosts.
-// Each host's own names are deduped before comparing — a repeated pattern
-// within one host (e.g. "Host web1 web1") is assertSerializable's check to
-// make, not this one's.
+// A duplicate resolves to a host mssh cannot represent; first-wins makes the
+// later block permanently unreachable. Case-sensitive, matching ssh's own
+// alias matching. Each host's own names are deduped before comparing.
 export function duplicateAlias(hosts: Host[]): string | undefined {
   const seen = new Set<string>();
   for (const host of hosts) {
@@ -429,7 +381,7 @@ export function serialize(hosts: Host[]): string {
     // [\s#"'\\] anyway, so formatValue would never quote it regardless.
     if (host.proxyJump !== undefined) lines.push(`  ProxyJump ${host.proxyJump}`);
     for (const extra of host.extras) {
-      lines.push(`  ${extra.key} ${extra.value}`); // raw remainder, emitted verbatim — see Host.extras
+      lines.push(`  ${extra.key} ${extra.value}`);
     }
     return lines.join("\n");
   });
@@ -446,10 +398,8 @@ export function addHost(hosts: Host[], host: Host): Host[] {
   return [...hosts, host];
 }
 
-// Matches ssh's first-wins across blocks: if a hand-edited config has the
-// same pattern on two Host lines, only the first is addressable here.
-// value: undefined clears the field back to unset (omitted on serialize),
-// same convention as Host itself.
+// Matches ssh's first-wins across blocks. value: undefined clears the field
+// back to unset (omitted on serialize), same convention as Host itself.
 export function updateHostField(hosts: Host[], name: string, field: ModeledField, value: string | undefined): Host[] {
   let updated = false;
   return hosts.map((h) => {
@@ -489,15 +439,9 @@ export function proxyJumpAliases(value: string): string[] {
     });
 }
 
-// The subset of the config ssh actually needs to reach `targets`: each named
-// host plus every host reachable from it through ProxyJump. Order is
-// preserved so the serialized output stays diff-stable.
-//
-// A host whose name contains a glob metacharacter (or a negation, `!x`) is
-// always kept: ssh may apply it to a target we did not match by name, and
-// dropping it would break a working connection, or silently drop a
-// negation with no siblings left to explain it. mssh itself never creates
-// one.
+// Each named host plus every host reachable through ProxyJump. A host whose
+// name contains a glob metacharacter or negation (`!x`) is always kept — ssh
+// may apply it to a target not matched by name; mssh itself never creates one.
 export function hostsForTarget(hosts: Host[], targets: string[]): Host[] {
   const byName = new Map<string, Host>();
   for (const h of hosts) {
@@ -524,9 +468,7 @@ export function hostsForTarget(hosts: Host[], targets: string[]): Host[] {
 export const KEEP_ALIVE_INTERVAL = "60";
 
 // Stops a NAT/firewall idle timeout from silently dropping a session. Skipped
-// when the host already carries the directive, so a value set by hand (or by
-// an earlier save) is never overwritten and never duplicated — this runs on
-// every save and every connect, so it must be idempotent.
+// when the host already carries the directive, so it stays idempotent.
 export function withKeepAlive(hosts: Host[]): Host[] {
   return hosts.map((host) => {
     if (host.extras.some((e) => e.key.toLowerCase() === "serveraliveinterval")) return host;

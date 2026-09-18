@@ -1,6 +1,7 @@
 import { test, expect, spyOn } from "bun:test";
 import * as nodeFs from "node:fs";
-import { resolveSsh, requireSsh, installGuidance, type WhichFn } from "../src/ssh-binary";
+import { requireSsh, type WhichFn } from "../src/ssh-binary";
+import { resolveSsh, installGuidance } from "../src/internal";
 
 function fakeWhich(result: string | null): WhichFn {
   return () => result;

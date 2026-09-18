@@ -1,8 +1,5 @@
-// Every password-requiring command must confirm the config exists before
-// prompting: typing a password into an operation that cannot succeed teaches
-// nothing and hides the real problem, which is that setup was never run.
-// Takes the resolved path rather than resolving it, so a caller's own path
-// resolution (and the test mocks over it) stays authoritative.
+// Confirms the config exists before any command prompts for a password —
+// typing one into an operation that can't succeed just hides that setup was never run.
 import { existsSync, statSync } from "node:fs";
 import { HEADER_LENGTH } from "../crypto";
 import { fatal } from "../exit";
@@ -12,10 +9,8 @@ export function requireExistingConfig(path: string): void {
     fatal(`No config found at ${path}.`, "Run 'mssh setup' to create one.");
   }
 
-  // Not a decrypt check: size alone is public, so reporting it leaks nothing
-  // that open() wouldn't already report regardless of password. A wrong
-  // password must still be indistinguishable from tampering — that stays
-  // in store.ts's opaque message, after the prompt.
+  // Not a decrypt check: size alone is public and leaks nothing beyond what
+  // open() would already report — a wrong password stays indistinguishable from tampering.
   const stat = statSync(path);
   if (!stat.isFile()) {
     fatal(`${path} is not a file (it may be a directory).`);
