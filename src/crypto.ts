@@ -6,7 +6,10 @@ const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const KEY_LENGTH = 32;
 const ALGORITHM = "aes-256-gcm";
-const HEADER_LENGTH = 1 + SALT_LENGTH + IV_LENGTH + TAG_LENGTH;
+
+// Exported: a shorter-than-this file can never decrypt regardless of
+// password, so callers may use it to reject one before ever prompting.
+export const HEADER_LENGTH = 1 + SALT_LENGTH + IV_LENGTH + TAG_LENGTH;
 
 // OWASP-minimum scrypt cost. maxmem must exceed the working set (128*r*N
 // bytes) — verified the Node/Bun check is strict '>', so 128*r*N exactly

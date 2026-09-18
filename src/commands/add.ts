@@ -27,6 +27,7 @@ import { ensureSecureDir, writeSecure } from "../secure-file";
 import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../remote-keys";
 import { tempConfigName } from "./connect";
 import { FIELD_LABELS, HOST_ALIAS_LABEL, KEY_PULL_LABEL, fieldPrompt } from "../field-labels";
+import { requireExistingConfig } from "./require-config";
 
 // Names index.ts dispatches on before ever reaching runConnect — a host with
 // one of these names would be silently unreachable via `mssh <name>`.
@@ -154,6 +155,7 @@ async function extractJumpHostKey(jumpHost: Host): Promise<string | undefined> {
 export async function runAdd(): Promise<void> {
   const { settings } = loadSettings();
   const path = configPath(settings);
+  requireExistingConfig(path);
   const password = await resolvePassword({ forcePrompt: false });
 
   const existingHosts = loadHosts(path, password);

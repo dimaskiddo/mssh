@@ -11,6 +11,7 @@ import { parse, type Host } from "../ssh-config";
 import { promptSelect } from "../prompt";
 import { connectWithRaw, type SpawnFn } from "./connect";
 import { fieldPrompt, CONNECT_TO_LABEL } from "../field-labels";
+import { requireExistingConfig } from "./require-config";
 
 const NO_HOSTS_MESSAGE = "No hosts configured. Add one with 'mssh config add'.";
 
@@ -22,6 +23,7 @@ export function hostChoices(hosts: Host[]): Array<{ name: string; value: string 
 export async function runList(): Promise<void> {
   const { settings } = loadSettings();
   const path = configPath(settings);
+  requireExistingConfig(path);
   const password = await resolvePassword({ forcePrompt: true });
 
   const hosts = parse(loadRaw(path, password));
@@ -42,6 +44,7 @@ export async function runList(): Promise<void> {
 export async function runListConnect(spawnFn?: SpawnFn): Promise<void> {
   const { settings } = loadSettings();
   const path = configPath(settings);
+  requireExistingConfig(path);
   const password = await resolvePassword({ forcePrompt: true });
 
   const raw = loadRaw(path, password);

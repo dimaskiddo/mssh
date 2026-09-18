@@ -21,6 +21,7 @@ import { ensureSecureDir, writeSecure } from "../secure-file";
 import { loadRaw } from "../store";
 import { requireSsh } from "../ssh-binary";
 import { parse, serialize, withKeepAlive, hostsForTarget, EXECUTING_DIRECTIVES, type Host } from "../ssh-config";
+import { requireExistingConfig } from "./require-config";
 
 // Pure: does this platform get SIGTERM/SIGHUP forwarding? Windows doesn't
 // support SIGTERM semantics the same way, and SIGHUP there kills the process
@@ -159,6 +160,7 @@ export async function connectWithRaw(raw: string, argv: string[], spawnFn: Spawn
 export async function runConnect(argv: string[], spawnFn: SpawnFn = spawn): Promise<void> {
   const { settings } = loadSettings();
   const path = configPath(settings);
+  requireExistingConfig(path);
   const password = await resolvePassword({ forcePrompt: false });
   const raw = loadRaw(path, password);
 

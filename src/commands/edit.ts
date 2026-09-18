@@ -13,6 +13,7 @@ import {
 } from "../ssh-config";
 import { promptInput, promptSelect } from "../prompt";
 import { FIELD_LABELS, FIELD_PICKER_LABEL, HOST_ALIAS_LABEL, fieldPrompt } from "../field-labels";
+import { requireExistingConfig } from "./require-config";
 
 export const FIELD_CHOICES: Array<{ name: string; value: ModeledField }> = (
   Object.keys(FIELD_LABELS) as ModeledField[]
@@ -62,6 +63,7 @@ async function promptNewValue(hosts: Host[], target: Host, field: ModeledField):
 export async function runEdit(name?: string): Promise<void> {
   const { settings } = loadSettings();
   const path = configPath(settings);
+  requireExistingConfig(path);
   const password = await resolvePassword({ forcePrompt: false });
 
   const hosts = loadHosts(path, password);

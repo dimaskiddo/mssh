@@ -5,6 +5,7 @@ import { loadHosts, saveHosts } from "../store";
 import { deleteHost, type Host } from "../ssh-config";
 import { promptConfirm } from "../prompt";
 import { findHost, pickHost } from "./edit";
+import { requireExistingConfig } from "./require-config";
 
 export function findDependents(hosts: Host[], name: string): Host[] {
   return hosts.filter((h) => h.proxyJump === name);
@@ -13,6 +14,7 @@ export function findDependents(hosts: Host[], name: string): Host[] {
 export async function runDelete(name?: string): Promise<void> {
   const { settings } = loadSettings();
   const path = configPath(settings);
+  requireExistingConfig(path);
   const password = await resolvePassword({ forcePrompt: false });
 
   const hosts = loadHosts(path, password);

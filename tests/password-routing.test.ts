@@ -17,13 +17,14 @@ class HaltForTest extends Error {
   }
 }
 
-// change-password.ts checks existsSync(configPath) — a real, unmocked node:fs
-// call — before ever reaching resolvePassword. Point it at a real (empty,
-// content irrelevant) scratch file so that check passes instead of hitting
-// the sandbox's nonexistent ~/.mssh/config and process.exit(1)-ing for real.
+// Every command under test now runs requireExistingConfig(path) — a real,
+// unmocked node:fs check — before ever reaching resolvePassword. Point it at
+// a real scratch file, sized past the crypto header (content otherwise
+// irrelevant), so that check passes instead of hitting the sandbox's
+// nonexistent ~/.mssh/config and process.exit(1)-ing for real.
 const scratchDir = mkdtempSync(join(tmpdir(), "mssh-password-routing-test-"));
 const scratchConfigPath = join(scratchDir, "config");
-writeFileSync(scratchConfigPath, "");
+writeFileSync(scratchConfigPath, "x".repeat(64));
 
 // configPath is overridden explicitly, not left to the ...realAppConfig
 // spread: another test file's mock.module() for this same specifier may run

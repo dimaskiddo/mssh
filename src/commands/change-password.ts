@@ -1,13 +1,13 @@
 // `mssh change-password`: re-encrypts the existing config under a new
 // password. Pure-local-crypto, same exemption as list/edit/delete — must
 // work on a machine with no ssh installed.
-import { existsSync } from "node:fs";
 import { configPath, loadSettings, resolvePassword, toDisplayPath } from "../app-config";
 import { loadRaw, saveHosts } from "../store";
 import { parse } from "../ssh-config";
 import { promptPassword } from "../prompt";
 import { fieldPrompt, PASSWORD_SET_LABEL, PASSWORD_CONFIRM_LABEL } from "../field-labels";
 import { passwordsMatch } from "./setup";
+import { requireExistingConfig } from "./require-config";
 
 // Verifies currentPassword against the file on disk, then re-seals it under
 // newPassword. No prompting, no process.exit — the fs/crypto core, testable
@@ -24,12 +24,7 @@ export async function changePassword(path: string, currentPassword: string, newP
 export async function runChangePassword(): Promise<void> {
   const { settings, sourcePath } = loadSettings();
   const path = configPath(settings);
-
-  if (!existsSync(path)) {
-    console.error(`No config found at ${path}. Run 'mssh setup' first.`);
-    process.exit(1);
-    return;
-  }
+  requireExistingConfig(path);
 
   console.error(`Re-keying ${path}.`);
 
