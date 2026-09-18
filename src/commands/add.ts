@@ -85,6 +85,13 @@ export function tempConfigRunner(tempConfigPath: string, sshPath: string): Remot
   };
 }
 
+// accept-new records an unknown bastion key instead of asking a question that
+// a piped `ls`/`cat` could never answer. Scoped to this one argv, never the
+// temp config, so downloadRemoteKey's cat still runs under strict checking.
+export function preflightArgv(tempConfigPath: string, jumpAlias: string): string[] {
+  return ["-F", tempConfigPath, "-o", "StrictHostKeyChecking=accept-new", jumpAlias, "true"];
+}
+
 // Reaches the jump host directly and offers to pull a private key from its
 // ~/.ssh into keysDir(). ProxyJump authenticates with a key read LOCALLY,
 // which is why it must be fetched off the bastion first, not used from there.
@@ -122,14 +129,32 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
         ...jumpHost.extras,
         { key: "ControlMaster", value: "auto" },
         { key: "ControlPath", value: `"${controlPath}"` },
-        { key: "ControlPersist", value: "30" },
+        { key: "ControlPersist", value: "300" },
       ],
     };
     writeSecure(tmpPath, serialize([hostForTemp]), undefined, "wx");
 
+    // Interactive and unbounded: the user answers ssh's host-key, password and
+    // MFA prompts here, so the piped ls/cat below inherit a live ControlMaster
+    // socket and never need a terminal of their own.
+    console.log(`Connecting to ${jumpAlias} to look for keys...`);
+    const handshake = spawnSync(sshPath, preflightArgv(tmpPath, jumpAlias), { stdio: "inherit" });
+    if (handshake.error) {
+      throw new Error(`failed to run ssh for ${jumpAlias}: ${handshake.error.message}`);
+    }
+    if (handshake.status !== 0) {
+      throw new Error(
+        `could not open a connection to ${jumpAlias} (ssh exited ${handshake.status}). ` +
+          `Check the ${FIELD_LABELS.proxyJump}'s hostname, user and identity file with 'mssh config edit ${jumpAlias}'.`,
+      );
+    }
+
     const keys = listRemoteKeys(jumpAlias, runner);
     if (keys.length === 0) {
-      console.log(`No keys found on ${jumpAlias}.`);
+      console.log(
+        `No private keys found in ${jumpAlias}:~/.ssh ` +
+          `(public keys, authorized_keys, config and known_hosts are not offered).`,
+      );
       return undefined;
     }
 

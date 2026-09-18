@@ -3,7 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { hostsWithoutProxyJump, type Host } from "../src/ssh-config";
-import { buildNewHost, tempConfigRunner, defaultUsername, validateNewAlias, resolveSsh } from "../src/internal";
+import {
+  buildNewHost,
+  tempConfigRunner,
+  preflightArgv,
+  defaultUsername,
+  validateNewAlias,
+  resolveSsh,
+} from "../src/internal";
 
 test("buildNewHost keeps required name and treats blank optional fields as undefined", () => {
   const host = buildNewHost({
@@ -118,4 +125,24 @@ test("tempConfigRunner threads -F at the given temp config path through to the r
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("preflightArgv puts -F and the temp path first, so the bastion's own block is what ssh reads", () => {
+  expect(preflightArgv("/tmp/cfg", "bastion1").slice(0, 2)).toEqual(["-F", "/tmp/cfg"]);
+});
+
+test("preflightArgv sets StrictHostKeyChecking=accept-new as a separate -o token pair", () => {
+  const argv = preflightArgv("/tmp/cfg", "bastion1");
+  const idx = argv.indexOf("-o");
+  expect(idx).toBeGreaterThan(-1);
+  expect(argv[idx + 1]).toBe("StrictHostKeyChecking=accept-new");
+});
+
+test("preflightArgv ends with the alias then true, so the alias is never parsed as a flag value", () => {
+  expect(preflightArgv("/tmp/cfg", "bastion1").slice(-2)).toEqual(["bastion1", "true"]);
+});
+
+test("preflightArgv emits the alias exactly once", () => {
+  const argv = preflightArgv("/tmp/cfg", "bastion1");
+  expect(argv.filter((a) => a === "bastion1")).toHaveLength(1);
 });

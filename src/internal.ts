@@ -9,7 +9,7 @@ export { ALIGNED_LABELS } from "./field-labels";
 export { isValidKeyFilename } from "./remote-keys";
 export { resolveSsh, installGuidance } from "./ssh-binary";
 export { isPidAlive, staleNames, cfgPid, tmpPid } from "./sweep";
-export { defaultUsername, buildNewHost, tempConfigRunner, validateNewAlias } from "./commands/add";
+export { defaultUsername, buildNewHost, tempConfigRunner, preflightArgv, validateNewAlias } from "./commands/add";
 export { reseal, changePassword } from "./commands/change-password";
 export { forwardsTermAndHup, rejectedFlags, childExitCode } from "./commands/connect";
 export { findDependents } from "./commands/delete";
