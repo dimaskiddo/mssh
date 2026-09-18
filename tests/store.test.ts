@@ -1,0 +1,117 @@
+import { test, expect } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { loadRaw, loadHosts, saveHosts } from "../src/store";
+import { parse, withKeepAlive } from "../src/ssh-config";
+import type { Host } from "../src/ssh-config";
+
+function withScratchDir(fn: (dir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "mssh-store-test-"));
+  try {
+    fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SAMPLE_TEXT = `Host myserver
+  HostName 1.2.3.4
+  Port 2222
+  User root
+`;
+
+test("saveHosts then loadHosts round-trips the same hosts, with keepalive added on save", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    const hosts = parse(SAMPLE_TEXT);
+
+    saveHosts(path, hosts, "correct-horse");
+    const loaded = loadHosts(path, "correct-horse");
+
+    expect(loaded).toEqual(withKeepAlive(hosts));
+  });
+});
+
+test("loadHosts/loadRaw with wrong password throws an opaque error", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    saveHosts(path, parse(SAMPLE_TEXT), "correct-horse");
+
+    let thrown: unknown;
+    try {
+      loadHosts(path, "wrong-password");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain("wrong password or corrupted file");
+    expect(message).not.toContain("wrong-password");
+    expect(message).not.toContain("correct-horse");
+    expect(message.toLowerCase()).not.toContain("auth tag");
+  });
+});
+
+test("loadRaw on a tampered file throws the same opaque message as wrong password", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    saveHosts(path, parse(SAMPLE_TEXT), "correct-horse");
+
+    const raw = readFileSync(path);
+    const tampered = Buffer.from(raw);
+    const flipIndex = tampered.length - 1;
+    tampered[flipIndex] = (tampered[flipIndex] ?? 0) ^ 0xff;
+    writeFileSync(path, tampered);
+
+    let tamperedErr: unknown;
+    try {
+      loadRaw(path, "correct-horse");
+    } catch (err) {
+      tamperedErr = err;
+    }
+
+    let wrongPasswordErr: unknown;
+    try {
+      loadRaw(path, "wrong-password");
+    } catch (err) {
+      wrongPasswordErr = err;
+    }
+
+    expect(tamperedErr).toBeInstanceOf(Error);
+    expect(wrongPasswordErr).toBeInstanceOf(Error);
+    expect((tamperedErr as Error).message).toBe((wrongPasswordErr as Error).message);
+  });
+});
+
+test("loadRaw on a nonexistent file throws a distinct 'no config found' error mentioning the path", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "does-not-exist.enc");
+
+    let thrown: unknown;
+    try {
+      loadRaw(path, "any-password");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain("no config found");
+    expect(message).toContain(path);
+  });
+});
+
+test("saveHosts writes an encrypted file, not plaintext of the host data", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "ssh_config.enc");
+    const hosts: Host[] = [{ name: "supersecrethostname", hostname: "10.0.0.99", extras: [] }];
+
+    saveHosts(path, hosts, "correct-horse");
+    const raw = readFileSync(path);
+
+    expect(raw.includes("supersecrethostname")).toBe(false);
+    expect(raw.includes("10.0.0.99")).toBe(false);
+  });
+});

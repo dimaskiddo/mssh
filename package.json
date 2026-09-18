@@ -1,0 +1,33 @@
+{
+  "name": "mssh",
+  "displayName": "MSSH (Manager/Masked SSH)",
+  "author": "Dimas Restu H <drh.dimasrestu@gmail.com>",
+  "version": "0.1.0",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7"
+  },
+  "scripts": {
+    "start": "bun --smol index.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "clean": "bun run build:clean && bun run vendor:clean",
+    "release": "bun install && bun .scripts/release.ts",
+    "build": "bun run build:clean && bun build --compile --compile-exec-argv=\"--smol\" --minify index.ts --outfile dist/mssh",
+    "build:all": "bun run build:clean && bun run build:linux-64-bit && bun run build:linux-arm64 && bun run build:macos-64-bit && bun run build:macos-arm64 && bun run build:windows-64-bit && bun run build:windows-arm64",
+    "build:linux-64-bit": "bun build --compile --compile-exec-argv=\"--smol\" --minify --target=bun-linux-x64 index.ts --outfile dist/mssh-linux-64-bit",
+    "build:linux-arm64": "bun build --compile --compile-exec-argv=\"--smol\" --minify --target=bun-linux-arm64 index.ts --outfile dist/mssh-linux-arm64",
+    "build:macos-64-bit": "bun build --compile --compile-exec-argv=\"--smol\" --minify --target=bun-darwin-x64 index.ts --outfile dist/mssh-macos-64-bit",
+    "build:macos-arm64": "bun build --compile --compile-exec-argv=\"--smol\" --minify --target=bun-darwin-arm64 index.ts --outfile dist/mssh-macos-arm64",
+    "build:windows-64-bit": "bun build --compile --compile-exec-argv=\"--smol\" --minify --target=bun-windows-x64 index.ts --outfile dist/mssh-windows-64-bit.exe",
+    "build:windows-arm64": "bun build --compile --compile-exec-argv=\"--smol\" --minify --target=bun-windows-arm64 index.ts --outfile dist/mssh-windows-arm64.exe",
+    "build:clean": "bun -e \"require('fs').rmSync('dist', {recursive: true, force: true})\"",
+    "vendor:clean": "bun -e \"require('fs').rmSync('node_modules', {recursive: true, force: true})\""
+  }
+}
