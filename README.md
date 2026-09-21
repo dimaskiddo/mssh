@@ -118,7 +118,7 @@ To build all six platform targets: `bun run build:all`.
     ```
 
 ### ✏️ Host Management
-*   **`mssh config add`**: Prompts for hostname/port/user/identity file, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`.
+*   **`mssh config add`**: Prompts for hostname/port/user/identity file, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`. If a key was already pulled from that jump host, it's offered for reuse first — no second connection needed.
 *   **`mssh config edit [name]`**: Edits one modeled field on a host (`HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump`). Loads, mutates in memory, and re-encrypts — no plaintext ever hits disk.
 *   **`mssh config delete [name]`**: Deletes a host. Warns if other hosts `ProxyJump` through it before asking for confirmation.
 
@@ -150,8 +150,6 @@ mssh keeps everything under `~/.mssh/`. `~` requires an absolute `HOME` (`USERPR
 | `config` | The encrypted SSH config (default location; override with `MSSH_CONFIG_PATH`). A config left at the old `ssh_config.enc` name is moved here automatically on first run. |
 | `config.yaml` | Optional settings file (YAML) — takes precedence over `.env` if both exist |
 | `.env` | Optional settings file (`KEY=value`) |
-| `run/` | Working space used only while a connection is active. Restricted to your user account and cleared when the session ends. |
-| `keys/` | Private keys downloaded via `config add`'s remote key extraction |
 
 Recognized settings (in either `config.yaml` or `.env`):
 

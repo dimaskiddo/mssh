@@ -1,7 +1,6 @@
 // Reaches a remote jump host's ~/.ssh over an existing ssh connection to list
 // and download key files. Every remote call is an argv array, never a shell string.
-import { unlinkSync, existsSync } from "node:fs";
-import { writeSecure } from "./secure-file";
+import { writeSecureAtomic } from "./secure-file";
 
 export type RemoteRunner = (
   sshTarget: string,
@@ -90,16 +89,8 @@ export function downloadRemoteKey(
     throw new Error(`failed to download remote key ${filename} from ${sshTarget}: ${remoteFailureReason(result)}`);
   }
 
-  try {
-    writeSecure(localPath, result.stdout);
-  } catch (err) {
-    // Remove the partially-written key if lockdown failed, rather than leaving
-    // it behind.
-    try {
-      if (existsSync(localPath)) unlinkSync(localPath);
-    } catch {
-      // best-effort; the original error below is the one that matters
-    }
-    throw err;
-  }
+  // Atomic: on an overwrite, a failure mid-write must leave the existing key
+  // intact rather than truncating it. The unlink-on-failure this replaces
+  // deleted the very file the user had just chosen to keep.
+  writeSecureAtomic(localPath, result.stdout);
 }

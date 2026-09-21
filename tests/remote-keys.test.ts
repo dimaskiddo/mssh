@@ -1,6 +1,6 @@
 import { test, expect, mock } from "bun:test";
 import { join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../src/remote-keys";
 import { isValidKeyFilename, isValidHostName } from "../src/internal";
 import { withScratchDir as scratch } from "./helpers";
@@ -177,4 +177,41 @@ test("downloadRemoteKey unlinks a partially-written key if writeSecure's lockdow
   } finally {
     Object.defineProperty(process, "platform", { value: original, configurable: true });
   }
+});
+
+test("downloadRemoteKey leaves an existing key intact when the overwrite write fails", () => {
+  // Same win32/icacls forcing as above, but this time localPath already holds
+  // real content — the regression guard for the truncate-then-delete hazard.
+  const original = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    withScratchDir((dir) => {
+      const localPath = join(dir, "id_rsa");
+      const originalContent = "-----BEGIN OPENSSH PRIVATE KEY-----\noldkeydata\n-----END OPENSSH PRIVATE KEY-----\n";
+      writeFileSync(localPath, originalContent);
+      const runner: RemoteRunner = () => ({
+        status: 0,
+        stdout: Buffer.from("newkeydata", "utf8"),
+        stderr: "",
+      });
+
+      expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, runner)).toThrow();
+      expect(readFileSync(localPath, "utf8")).toBe(originalContent);
+    });
+  } finally {
+    Object.defineProperty(process, "platform", { value: original, configurable: true });
+  }
+});
+
+test("downloadRemoteKey replaces the content of an existing key on a successful overwrite", () => {
+  withScratchDir((dir) => {
+    const localPath = join(dir, "id_rsa");
+    writeFileSync(localPath, "oldkeydata");
+    const newContent = "-----BEGIN OPENSSH PRIVATE KEY-----\nnewkeydata\n-----END OPENSSH PRIVATE KEY-----\n";
+    const runner: RemoteRunner = () => ({ status: 0, stdout: Buffer.from(newContent, "utf8"), stderr: "" });
+
+    downloadRemoteKey("jumphost", "id_rsa", localPath, runner);
+
+    expect(readFileSync(localPath, "utf8")).toBe(newContent);
+  });
 });

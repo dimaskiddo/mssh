@@ -2,7 +2,7 @@
 // Filename-only, same predicates as the remote key pull — nothing is opened or read.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { homeDir } from "./app-config";
+import { homeDir, keysDir } from "./app-config";
 import { isValidKeyFilename, isNonKeyFile } from "./remote-keys";
 
 // ssh's own default-identity order, so the offered key is the one ssh would
@@ -32,4 +32,30 @@ export function discoverDefaultKeyPath(): string | undefined {
 
   const picked = pickDefaultKeyName(names);
   return picked === undefined ? undefined : join(sshDir, picked);
+}
+
+// localKeyName() builds `<alias>_<suffix>.pem`, so the prefix is the only
+// invertible part — the suffix is an arbitrary remote basename. A bastion
+// alias may itself contain "_", so this can over-match; every candidate is
+// shown to the user by name and never substituted silently.
+export function pulledKeyNamesFor(jumpAlias: string, names: string[]): string[] {
+  const prefix = `${jumpAlias}_`;
+  return names.filter((n) => n.startsWith(prefix) && n.endsWith(".pem") && n.length > prefix.length + ".pem".length).sort();
+}
+
+// An absent keysDir() just means nothing has been pulled yet. Not created
+// here: this is a read, and the write path already calls ensureSecureDir.
+export function listPulledKeys(jumpAlias: string): string[] {
+  const dir = keysDir();
+
+  let names: string[];
+  try {
+    names = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+
+  return pulledKeyNamesFor(jumpAlias, names).map((n) => join(dir, n));
 }

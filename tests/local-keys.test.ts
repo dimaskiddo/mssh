@@ -1,10 +1,11 @@
 import { test, expect, spyOn } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as nodeOs from "node:os";
 import { withScratchDir } from "./helpers";
-import { pickDefaultKeyName } from "../src/internal";
-import { discoverDefaultKeyPath } from "../src/local-keys";
+import { pickDefaultKeyName, pulledKeyNamesFor } from "../src/internal";
+import { discoverDefaultKeyPath, listPulledKeys } from "../src/local-keys";
+import { localKeyName } from "../src/remote-keys";
 
 test("pickDefaultKeyName prefers id_rsa even when it sorts after another candidate", () => {
   expect(pickDefaultKeyName(["acme.pem", "id_ed25519", "id_rsa"])).toBe("id_rsa");
@@ -78,5 +79,53 @@ test("discoverDefaultKeyPath ignores a subdirectory that would otherwise pass th
     mkdirSync(join(sshDir, "sockets"), { recursive: true });
 
     expect(discoverDefaultKeyPath()).toBeUndefined();
+  });
+});
+
+test("pulledKeyNamesFor matches only this bastion's keys and sorts them", () => {
+  const names = ["bastion-1_rsa.pem", "other_rsa.pem", "bastion-1_ed25519.pem"];
+  expect(pulledKeyNamesFor("bastion-1", names)).toEqual(["bastion-1_ed25519.pem", "bastion-1_rsa.pem"]);
+});
+
+test("pulledKeyNamesFor requires the .pem suffix", () => {
+  expect(pulledKeyNamesFor("bastion-1", ["bastion-1_rsa", "bastion-1_rsa.pem.bak"])).toEqual([]);
+});
+
+test("pulledKeyNamesFor rejects the bare prefix with an empty suffix", () => {
+  expect(pulledKeyNamesFor("bastion-1", ["bastion-1_.pem"])).toEqual([]);
+});
+
+test("pulledKeyNamesFor returns empty when nothing matches", () => {
+  expect(pulledKeyNamesFor("bastion-1", [])).toEqual([]);
+});
+
+test("pulledKeyNamesFor accepts what localKeyName actually produces", () => {
+  const produced = localKeyName("bastion-1", "id_rsa");
+  expect(pulledKeyNamesFor("bastion-1", [produced])).toEqual([produced]);
+});
+
+test("listPulledKeys returns absolute paths under keysDir()", () => {
+  withFakeHome((home) => {
+    const keys = join(home, ".mssh", "keys");
+    mkdirSync(keys, { recursive: true });
+    writeFileSync(join(keys, "bastion-1_rsa.pem"), "fakekey");
+
+    expect(listPulledKeys("bastion-1")).toEqual([join(home, ".mssh", "keys", "bastion-1_rsa.pem")]);
+  });
+});
+
+test("listPulledKeys returns empty and does not create keysDir() when it does not exist", () => {
+  withFakeHome((home) => {
+    expect(listPulledKeys("bastion-1")).toEqual([]);
+    expect(existsSync(join(home, ".mssh", "keys"))).toBe(false);
+  });
+});
+
+test("listPulledKeys ignores a subdirectory named like a key", () => {
+  withFakeHome((home) => {
+    const keys = join(home, ".mssh", "keys");
+    mkdirSync(join(keys, "bastion-1_rsa.pem"), { recursive: true });
+
+    expect(listPulledKeys("bastion-1")).toEqual([]);
   });
 });

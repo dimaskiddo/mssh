@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { userInfo } from "node:os";
 import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
-import { discoverDefaultKeyPath } from "../local-keys";
+import { discoverDefaultKeyPath, listPulledKeys } from "../local-keys";
 import { loadHosts, saveHosts } from "../store";
 import {
   addHost,
@@ -96,7 +96,31 @@ export function preflightArgv(tempConfigPath: string, jumpAlias: string): string
 // Reaches the jump host directly and offers to pull a private key from its
 // ~/.ssh into keysDir(). ProxyJump authenticates with a key read LOCALLY,
 // which is why it must be fetched off the bastion first, not used from there.
+// Runs before requireSsh() and the interactive handshake: a second host behind
+// the same bastion should not cost a second password/MFA round trip just to
+// rediscover a key that is already in keysDir().
+async function reuseExistingKey(jumpAlias: string): Promise<string | undefined> {
+  const existing = listPulledKeys(jumpAlias);
+  if (existing.length === 0) return undefined;
+
+  if (existing.length === 1) {
+    const only = existing[0] as string;
+    const reuse = await promptConfirm(`A key from ${jumpAlias} was already pulled to ${only}. Use it?`, {
+      default: true,
+    });
+    return reuse ? only : undefined;
+  }
+
+  return await promptSelect<string | undefined>(fieldPrompt(KEY_PULL_LABEL), [
+    ...existing.map((p) => ({ name: p, value: p as string | undefined })),
+    { name: "(pull a new key from the jump host)", value: undefined },
+  ]);
+}
+
 async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<string | undefined> {
+  const reused = await reuseExistingKey(jumpAlias);
+  if (reused !== undefined) return reused;
+
   const sshPath = requireSsh();
 
   ensureSecureDir(runDir());
@@ -171,7 +195,9 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
 
     if (existsSync(localPath)) {
       const overwrite = await promptConfirm(`${localPath} already exists. Overwrite?`, { default: false });
-      if (!overwrite) return undefined;
+      // Declining means "keep what's there" — that file is this bastion's key,
+      // so hand it back rather than dropping through to a manual path prompt.
+      if (!overwrite) return localPath;
     }
 
     downloadRemoteKey(jumpAlias, selected, localPath, runner);
