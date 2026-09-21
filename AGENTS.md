@@ -30,6 +30,7 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **SecureFile** | `src/secure-file.ts` — `writeSecure`/`ensureSecureDir`. POSIX `chmod` / Windows `icacls`. The **only** module that owns permission enforcement |
 | **SSHBinary** | `src/ssh-binary.ts` — `resolveSsh`/`requireSsh`, resolves `ssh` to an absolute path, per-OS install guidance |
 | **RemoteKeys** | `src/remote-keys.ts` — remote `~/.ssh` listing and key download, argv-array only, filename allowlist |
+| **LocalKeys** | `src/local-keys.ts` — discovers a default identity file in the local `~/.ssh`, filename-only, reusing remote-keys' allowlist |
 | **Prompt** | `src/prompt.ts` — four thin wrappers over `@inquirer/prompts` |
 | **Commands** | `src/commands/` — `setup`, `list`, `connect`, `add`, `edit`, `delete` |
 | **Entry** | `index.ts` — argv dispatch only; prints `err.message`, never a stack |
@@ -126,6 +127,7 @@ mssh/
 │   ├── ssh-binary.ts          # resolveSsh/requireSsh — resolve ssh to an absolute path, per-OS install guidance
 │   ├── prompt.ts              # Thin wrappers over @inquirer/prompts
 │   ├── remote-keys.ts         # Remote ~/.ssh listing + key download
+│   ├── local-keys.ts          # Local ~/.ssh discovery for the Identity File prompt default
 │   └── commands/
 │       ├── setup.ts           # mssh setup
 │       ├── list.ts            # mssh / mssh config list

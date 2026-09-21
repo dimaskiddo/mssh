@@ -91,6 +91,12 @@ test("listRemoteKeys filters out .pub, known_hosts*, authorized_keys, and config
   expect(result).toEqual(["id_rsa", "id_ed25519"]);
 });
 
+test("listRemoteKeys also filters out environment and rc", () => {
+  const listing = ["id_rsa", "environment", "rc"].join("\n");
+  const result = listRemoteKeys("jumphost", fakeOkRunner(listing));
+  expect(result).toEqual(["id_rsa"]);
+});
+
 test("listRemoteKeys filters out names that fail isValidKeyFilename before they reach the picker", () => {
   const listing = ["id_rsa", "..", ".", "...", "id_rsa;rm -rf /"].join("\n");
   const result = listRemoteKeys("jumphost", fakeOkRunner(listing));

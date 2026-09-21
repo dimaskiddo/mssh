@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { userInfo } from "node:os";
 import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
+import { discoverDefaultKeyPath } from "../local-keys";
 import { loadHosts, saveHosts } from "../store";
 import {
   addHost,
@@ -264,7 +265,7 @@ export async function runAdd(): Promise<void> {
   if (identityFile === undefined) {
     identityFile = (
       await promptInput(fieldPrompt(FIELD_LABELS.identityFile), {
-        default: settings.DEFAULT_SSH_KEY_PATH,
+        default: settings.DEFAULT_SSH_KEY_PATH ?? discoverDefaultKeyPath(),
         validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.identityFile} cannot contain a newline.`),
       })
     ).trim();

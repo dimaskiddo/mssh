@@ -19,9 +19,16 @@ export function isValidKeyFilename(name: string): boolean {
 }
 
 // Suffix-match .pub and prefix-match known_hosts (rotated/backup variants);
-// authorized_keys/config are exact-matched to avoid over-filtering something like config.bak.
-function isNonKeyFile(name: string): boolean {
-  return name.endsWith(".pub") || name === "authorized_keys" || name === "config" || name.startsWith("known_hosts");
+// the rest are exact-matched to avoid over-filtering something like config.bak.
+export function isNonKeyFile(name: string): boolean {
+  return (
+    name.endsWith(".pub") ||
+    name === "authorized_keys" ||
+    name === "config" ||
+    name === "environment" ||
+    name === "rc" ||
+    name.startsWith("known_hosts")
+  );
 }
 
 const KEY_TYPE_BY_REMOTE_NAME: Record<string, string> = {

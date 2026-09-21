@@ -2,7 +2,7 @@
   "name": "mssh",
   "displayName": "MSSH (Manager/Masked SSH)",
   "author": "Dimas Restu H <drh.dimasrestu@gmail.com>",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "module": "index.ts",
   "type": "module",
   "private": true,

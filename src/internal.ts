@@ -7,6 +7,7 @@ export { pickHomeDir, msshRootDir, expandHome, parseEnvText, pickSettings, selec
 export { unquote, decodeValue, stripComment, isValidHostName, EXECUTING_DIRECTIVES, KEEP_ALIVE_INTERVAL } from "./ssh-config";
 export { ALIGNED_LABELS } from "./field-labels";
 export { isValidKeyFilename } from "./remote-keys";
+export { pickDefaultKeyName } from "./local-keys";
 export { resolveSsh, installGuidance } from "./ssh-binary";
 export { isPidAlive, staleNames, cfgPid, tmpPid } from "./sweep";
 export { defaultUsername, buildNewHost, tempConfigRunner, preflightArgv, validateNewAlias } from "./commands/add";
