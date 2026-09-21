@@ -38,8 +38,10 @@ export function promptPassword(message: string, opts?: { validate?: Validator })
   return runPrompt(() => password({ message, mask: true, validate: opts?.validate }));
 }
 
+// loop: false — @inquirer defaults to wrapping, which on a long host list
+// silently moves the cursor to the opposite end of a list the user is scanning.
 export function promptSelect<T>(message: string, choices: Array<{ name: string; value: T }>): Promise<T> {
-  return runPrompt(() => select({ message, choices }));
+  return runPrompt(() => select({ message, choices, loop: false }));
 }
 
 export function promptConfirm(message: string, opts?: { default?: boolean }): Promise<boolean> {
