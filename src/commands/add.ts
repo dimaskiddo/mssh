@@ -186,6 +186,18 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string, password: s
       );
     }
 
+    // Authenticated: the ControlPersist master keeps the bastion's own key
+    // from ever being needed again for this handshake's ls/cat calls, so the
+    // decrypted jump-host key needn't sit in run/ for the rest of this flow.
+    for (const keyTempPath of keyTempPaths) {
+      try {
+        if (existsSync(keyTempPath)) unlinkSync(keyTempPath);
+      } catch {
+        // best-effort; cleanup() below is the fallback
+      }
+    }
+    keyTempPaths.length = 0;
+
     const keys = listRemoteKeys(jumpAlias, runner);
     if (keys.length === 0) {
       console.log(

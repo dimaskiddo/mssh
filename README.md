@@ -21,19 +21,23 @@
 
 ```mermaid
 graph TD
-    Enc["Encrypted config at rest"] -- "your password" --> Dec["Decrypted in memory"]
-    Dec --> Tmp["Ephemeral, permission-locked config<br/>only the target host and its jump chain"]
+    Enc["Encrypted config + pulled keys at rest"] -- "your password" --> Dec["Decrypted in memory"]
+    Dec --> Tmp["Ephemeral, permission-locked config + keys<br/>only the target host and its jump chain"]
     Tmp --> Spawn["Native ssh client"]
 
     Spawn -- "no jump host" --> Direct["Direct connection"]
     Spawn -- "ProxyJump set" --> Jump["OpenSSH resolves the jump chain itself,<br/>reusing the same ephemeral config"]
 
-    Direct --> Exit["Session ends"]
-    Jump --> Exit
-    Exit --> Cleanup["Ephemeral config destroyed"]
+    Direct --> Auth["Authenticated"]
+    Jump --> Auth
+
+    Auth -- "POSIX" --> Purge["Ephemeral config + keys destroyed immediately"]
+    Auth -- "Windows" --> Exit["Session ends"]
+    Purge --> Exit
+    Exit --> Cleanup["Anything left over is destroyed"]
 ```
 
-The ephemeral config has to outlive the initial handoff to `ssh`: OpenSSH resolves a jump-host chain by re-invoking itself, and that second invocation reads the same file well after the first one returns. Destruction is therefore tied to the session actually ending, not to the handoff — and it is armed before the file is ever created, so an interrupted start leaves nothing behind.
+The ephemeral config has to outlive the initial handoff to `ssh`: OpenSSH resolves a jump-host chain by re-invoking itself, and that second invocation reads the same file well after the first one returns. On POSIX, mssh detects the moment ssh authenticates — via a `ControlPath` socket that only appears once login succeeds — and destroys the ephemeral config and any decrypted keys right then, rather than waiting for the session to end; Windows' `ssh.exe` has no equivalent signal, so there the plaintext lives for the whole session. Either way, exit-time cleanup is armed before any file is ever created, so an interrupted start, a failed auth, or the session ending all leave nothing behind.
 
 ---
 
@@ -168,7 +172,7 @@ Recognized settings (in either `config.yaml` or `.env`):
 
 - Backup, cloud-sync, or accidental git commit of your SSH config — on disk it is always ciphertext.
 - Casual shoulder-surfing of your host inventory — listing hosts (`mssh`, `mssh config list`) always requires the password, even if one is stored in `MSSH_PASSWORD`.
-- Other local users reading the decrypted config mid-session — the run directory and the decrypted temp file are both restricted to your user account.
+- Other local users reading the decrypted config mid-session — the run directory and the decrypted temp file are both restricted to your user account. On POSIX, that plaintext is also deleted as soon as ssh finishes authenticating, not only when the session ends, shrinking the window it exists in to seconds. On Windows it persists for the whole session, since Windows' `ssh.exe` has no way to signal that moment.
 - A private key pulled from a jump host during `mssh config add` — it's sealed under the master password at rest in `~/.mssh/keys`, the same as the config, and decrypted to the restricted run directory only for the lifetime of a connection. A key pulled by an older mssh version is upgraded to sealed automatically the next time any command decrypts your config.
 - Offline brute-force of a stolen `config` or a stolen key under `~/.mssh/keys` — key derivation is deliberately slow and memory-hard, making guessing attempts costly.
 - A hand-imported or hand-edited config turning `mssh <host>` into a launcher for arbitrary programs — directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match exec`, `KnownHostsCommand`, etc.) are dropped on load and refused on save. `ssh` itself is always invoked by its resolved absolute path, never a bare `PATH`-searched name, so a shadowing binary earlier on `PATH` can't run in its place.

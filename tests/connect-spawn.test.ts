@@ -57,6 +57,11 @@ class FakeChild extends EventEmitter {
 
 const fakeSpawn = (fake: FakeChild): SpawnFn => () => fake as unknown as ChildProcess;
 
+const fakeSpawnCapturing = (fake: FakeChild, captured: { args?: string[] }): SpawnFn => (_cmd, args) => {
+  captured.args = args;
+  return fake as unknown as ChildProcess;
+};
+
 function tempFilesIn(dir: string): string[] {
   try {
     return readdirSync(dir);
@@ -252,6 +257,55 @@ test("the sealed config on disk is unchanged by a connect that materializes a ke
     expect(readFileSync(configFilePath).equals(before)).toBe(true);
 
     fake.emit("exit", 0, null);
+  } finally {
+    exitSpy.mockRestore();
+  }
+});
+
+test("ssh is spawned with ControlMaster/ControlPath before the user's argv", async () => {
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
+  try {
+    const fake = new FakeChild();
+    const captured: { args?: string[] } = {};
+    await connectWithRaw(sealedRaw, ["web1"], TEST_PASSWORD, fakeSpawnCapturing(fake, captured));
+
+    const args = captured.args ?? [];
+    const cmIndex = args.indexOf("ControlMaster=yes");
+    const cpIndex = args.findIndex((a) => a.startsWith("ControlPath="));
+    const webIndex = args.indexOf("web1");
+    expect(cmIndex).toBeGreaterThan(-1);
+    expect(cpIndex).toBeGreaterThan(-1);
+    expect(cmIndex).toBeLessThan(webIndex);
+    expect(cpIndex).toBeLessThan(webIndex);
+
+    fake.emit("exit", 0, null);
+  } finally {
+    exitSpy.mockRestore();
+  }
+});
+
+test("temp files are purged as soon as the control socket appears, before ssh exits", async () => {
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
+  try {
+    const fake = new FakeChild();
+    const captured: { args?: string[] } = {};
+    await connectWithRaw(sealedRaw, ["web1"], TEST_PASSWORD, fakeSpawnCapturing(fake, captured));
+
+    expect(tempFilesIn(scratchRunDir).length).toBe(1);
+
+    const cpArg = (captured.args ?? []).find((a) => a.startsWith("ControlPath="));
+    expect(cpArg).toBeDefined();
+    const controlPath = (cpArg as string).slice("ControlPath=".length);
+
+    writeFileSync(controlPath, ""); // stands in for ssh creating the socket post-auth
+
+    await Bun.sleep(250);
+
+    expect(tempFilesIn(scratchRunDir).length).toBe(0);
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    fake.emit("exit", 0, null); // idempotent cleanup must not double-fail or double-exit
+    expect(exitSpy).toHaveBeenCalledWith(0);
   } finally {
     exitSpy.mockRestore();
   }

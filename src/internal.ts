@@ -11,7 +11,7 @@ export { ALIGNED_LABELS } from "./field-labels";
 export { isValidKeyFilename } from "./remote-keys";
 export { pickDefaultKeyName, pulledKeyNamesFor } from "./local-keys";
 export { resolveSsh, installGuidance } from "./ssh-binary";
-export { isPidAlive, staleNames, cfgPid, keyPid, tmpPid } from "./sweep";
+export { isPidAlive, staleNames, cfgPid, keyPid, cmPid, tmpPid } from "./sweep";
 export { defaultUsername, buildNewHost, tempConfigRunner, preflightArgv, validateNewAlias } from "./commands/add";
 export { reseal, changePassword } from "./commands/change-password";
 export { forwardsTermAndHup, rejectedFlags, childExitCode } from "./commands/connect";

@@ -2,6 +2,15 @@
 // real ssh against it. ProxyJump makes ssh re-exec itself as a CHILD process
 // with `-F <this same temp path>`, long after spawn() below returns — so
 // cleanup binds to the parent ssh process's exit, never to spawn() itself.
+//
+// Plaintext in run/ is purged as soon as ssh no longer needs it, not only at
+// exit: ssh only opens ControlPath after ssh_login() returns (i.e. after
+// authentication), and ProxyJump's own proxy command never forwards -o from
+// argv to the jump child, so mssh's ControlMaster/ControlPath flags (placed
+// before the user's argv, where the first -o value wins) can't be spoofed or
+// bypassed by a jump hop or a later user -o. A poll for that socket's
+// appearance triggers the same cleanup() early; exit/error stay as the
+// fallback for auth failure, -G, a user -S, an unsafe path, or Windows.
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
@@ -36,6 +45,22 @@ export function forwardsTermAndHup(platform: NodeJS.Platform): boolean {
 // (randomBytes), never a counter, pid or timestamp.
 export function tempConfigName(pid: number, randomSuffix: string): string {
   return `cfg-${pid}-${randomSuffix}`;
+}
+
+// Matches tempConfigName's convention (see sweep.ts's CM_NAME).
+export function controlPathName(pid: number, randomSuffix: string): string {
+  return `cm-${pid}-${randomSuffix}`;
+}
+
+// Windows ssh.exe has no ControlMaster (no unix sockets). A unix socket path
+// is also capped at sun_path (104 on macOS/108 on Linux); ssh first binds
+// path + ".XXXXXXXXXXXXXXXX" (+17 bytes), so leave headroom or it's fatal in
+// ssh itself. `%`/`$` are ControlPath expansion tokens, and a space would
+// need quoting we don't do here — reject rather than risk a mismatched path.
+export function earlyPurgeUsable(path: string, platform: NodeJS.Platform): boolean {
+  if (platform === "win32") return false;
+  if (Buffer.byteLength(path) + 17 >= 104) return false;
+  return /^[A-Za-z0-9._/-]+$/.test(path);
 }
 
 // ssh lets -F redirect the connection entirely, and an -o naming a
@@ -98,7 +123,13 @@ export function connectWithRaw(raw: string, argv: string[], password: string, sp
 
   ensureSecureDir(runDir());
   const tmpPath = join(runDir(), tempConfigName(process.pid, randomBytes(8).toString("hex")));
+  const controlPath = join(runDir(), controlPathName(process.pid, randomBytes(8).toString("hex")));
+  const usePurge = earlyPurgeUsable(controlPath, process.platform);
   const keyTempPaths: string[] = [];
+
+  // Assigned after spawnFn() runs, but cleanup() closes over the binding so
+  // it can still clear the poll timer no matter which path calls it first.
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
 
   // Registered before writeSecure(), not after, so the temp file is cleaned
   // up even if the write or its permission lockdown fails partway.
@@ -106,6 +137,7 @@ export function connectWithRaw(raw: string, argv: string[], password: string, sp
   const cleanup = (): void => {
     if (cleaned) return;
     cleaned = true;
+    if (pollTimer !== undefined) clearInterval(pollTimer);
     try {
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
     } catch {
@@ -114,6 +146,13 @@ export function connectWithRaw(raw: string, argv: string[], password: string, sp
     for (const keyTempPath of keyTempPaths) {
       try {
         if (existsSync(keyTempPath)) unlinkSync(keyTempPath);
+      } catch {
+        // best-effort; nothing more useful to do at exit time
+      }
+    }
+    if (usePurge) {
+      try {
+        if (existsSync(controlPath)) unlinkSync(controlPath);
       } catch {
         // best-effort; nothing more useful to do at exit time
       }
@@ -145,7 +184,18 @@ export function connectWithRaw(raw: string, argv: string[], password: string, sp
   // written through. Do not relax to "w".
   writeSecure(tmpPath, scoped, undefined, "wx");
 
-  const child = spawnFn(sshPath, ["-F", tmpPath, ...argv], { stdio: "inherit" });
+  const controlArgs = usePurge ? ["-o", "ControlMaster=yes", "-o", `ControlPath=${controlPath}`] : [];
+  const child = spawnFn(sshPath, ["-F", tmpPath, ...controlArgs, ...argv], { stdio: "inherit" });
+
+  // Fires the same cleanup() the moment ssh proves it has authenticated,
+  // instead of waiting for the session to end. unref()'d so it never holds
+  // the process open on its own, and cleanup() itself clears it.
+  if (usePurge) {
+    pollTimer = setInterval(() => {
+      if (existsSync(controlPath)) cleanup();
+    }, 100);
+    pollTimer.unref();
+  }
 
   process.on("SIGINT", () => child.kill("SIGINT"));
   if (forwardsTermAndHup(process.platform)) {

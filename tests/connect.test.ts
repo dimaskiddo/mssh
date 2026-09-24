@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { tempConfigName } from "../src/commands/connect";
+import { tempConfigName, controlPathName, earlyPurgeUsable } from "../src/commands/connect";
 import { forwardsTermAndHup, rejectedFlags, childExitCode } from "../src/internal";
 
 test("forwardsTermAndHup is true on POSIX platforms", () => {
@@ -15,6 +15,32 @@ test("tempConfigName embeds the pid and the given random suffix", () => {
   expect(tempConfigName(123, "abc123")).toBe("cfg-123-abc123");
   expect(tempConfigName(123, "abc123")).not.toBe(tempConfigName(123, "def456"));
   expect(tempConfigName(123, "abc123")).not.toBe(tempConfigName(124, "abc123"));
+});
+
+test("controlPathName embeds the pid and the given random suffix", () => {
+  expect(controlPathName(123, "abc123")).toBe("cm-123-abc123");
+  expect(controlPathName(123, "abc123")).not.toBe(controlPathName(123, "def456"));
+  expect(controlPathName(123, "abc123")).not.toBe(controlPathName(124, "abc123"));
+});
+
+test("earlyPurgeUsable is false on win32 regardless of the path", () => {
+  expect(earlyPurgeUsable("/home/user/.mssh/run/cm-1-aaaa", "win32")).toBe(false);
+});
+
+test("earlyPurgeUsable is false for a path too long for a unix socket", () => {
+  const long = "/home/user/.mssh/run/" + "a".repeat(90);
+  expect(earlyPurgeUsable(long, "linux")).toBe(false);
+});
+
+test("earlyPurgeUsable is false for a path containing %, $ or a space", () => {
+  expect(earlyPurgeUsable("/home/user %2/.mssh/run/cm-1-aaaa", "linux")).toBe(false);
+  expect(earlyPurgeUsable("/home/user$HOME/.mssh/run/cm-1-aaaa", "linux")).toBe(false);
+  expect(earlyPurgeUsable("/home/user%h/.mssh/run/cm-1-aaaa", "linux")).toBe(false);
+});
+
+test("earlyPurgeUsable is true for a normal POSIX path", () => {
+  expect(earlyPurgeUsable("/home/user/.mssh/run/cm-1234-abcdef01", "linux")).toBe(true);
+  expect(earlyPurgeUsable("/home/user/.mssh/run/cm-1234-abcdef01", "darwin")).toBe(true);
 });
 
 test("rejectedFlags passes through an argv with no dangerous flags", () => {

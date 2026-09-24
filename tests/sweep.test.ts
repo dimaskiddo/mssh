@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { join } from "node:path";
 import { writeFileSync, readdirSync, mkdirSync } from "node:fs";
 import { sweepOrphanedTempFiles } from "../src/sweep";
-import { isPidAlive, staleNames, cfgPid, tmpPid, keyPid } from "../src/internal";
+import { isPidAlive, staleNames, cfgPid, tmpPid, keyPid, cmPid } from "../src/internal";
 import { withScratchDir as scratch } from "./helpers";
 
 const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-sweep-test-", fn);
@@ -35,6 +35,12 @@ test("keyPid extracts the pid from key-store.ts's keyTempName convention", () =>
   expect(keyPid("key-1234-abcdef01")).toBe(1234);
   expect(keyPid("not-a-key-file")).toBeUndefined();
   expect(keyPid("key-abc-abcdef01")).toBeUndefined();
+});
+
+test("cmPid extracts the pid from connect.ts's controlPathName convention", () => {
+  expect(cmPid("cm-1234-abcdef01")).toBe(1234);
+  expect(cmPid("not-a-cm-file")).toBeUndefined();
+  expect(cmPid("cm-abc-abcdef01")).toBeUndefined();
 });
 
 test("staleNames keeps a name whose pid is live and drops one whose pid is dead", () => {
@@ -72,6 +78,19 @@ test("sweepOrphanedTempFiles removes a key-* entry whose pid is dead, keeps one 
     sweepOrphanedTempFiles(runDir, join(dir, "config-dir"), join(dir, "keys-dir"));
 
     expect(readdirSync(runDir).sort()).toEqual([`key-${process.pid}-bbbbbbbb`].sort());
+  });
+});
+
+test("sweepOrphanedTempFiles removes a cm-* entry whose pid is dead, keeps one whose pid is live", () => {
+  withScratchDir((dir) => {
+    const runDir = join(dir, "run");
+    mkdirSync(runDir);
+    writeFileSync(join(runDir, `cm-${DEAD_PID}-aaaaaaaa`), "stale control socket");
+    writeFileSync(join(runDir, `cm-${process.pid}-bbbbbbbb`), "live control socket");
+
+    sweepOrphanedTempFiles(runDir, join(dir, "config-dir"), join(dir, "keys-dir"));
+
+    expect(readdirSync(runDir).sort()).toEqual([`cm-${process.pid}-bbbbbbbb`].sort());
   });
 });
 
