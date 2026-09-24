@@ -81,18 +81,25 @@ test("config edit with two names is rejected", () => {
   expect(result.stderr).toContain("Unexpected argument(s): host2");
 });
 
+test("config migrate-keys with a trailing argument is rejected", () => {
+  const result = runCli(["config", "migrate-keys", "anything"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Unexpected argument(s): anything");
+});
+
 test("config with an unknown subcommand prints usage and exits 1", () => {
   const result = runCli(["config", "bogus"]);
   expect(result.signal).toBeNull();
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain("Usage: mssh config <list|add|edit|delete>");
+  expect(result.stderr).toContain("Usage: mssh config <list|add|edit|delete|migrate-keys>");
 });
 
 test("config with no subcommand prints usage and exits 1", () => {
   const result = runCli(["config"]);
   expect(result.signal).toBeNull();
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain("Usage: mssh config <list|add|edit|delete>");
+  expect(result.stderr).toContain("Usage: mssh config <list|add|edit|delete|migrate-keys>");
 });
 
 const NO_CONFIG_CASES: Array<[string, string[]]> = [
@@ -102,6 +109,7 @@ const NO_CONFIG_CASES: Array<[string, string[]]> = [
   ["config add", ["config", "add"]],
   ["config edit", ["config", "edit"]],
   ["config delete", ["config", "delete"]],
+  ["config migrate-keys", ["config", "migrate-keys"]],
   ["connect to a host", ["somehost"]],
   ["change-password", ["change-password"]],
 ];

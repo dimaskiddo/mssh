@@ -25,7 +25,8 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 |---|---|
 | **Crypto** | `src/crypto.ts` — `seal`/`open`, AES-256-GCM + scrypt at OWASP-minimum cost. Versioned payload with a fresh salt and IV per save. Pure, no I/O |
 | **SSHConfig** | `src/ssh-config.ts` — `parse`/`serialize` + pure mutations (`addHost`, `updateHostField`, `deleteHost`, `hostsWithoutProxyJump`, `emptyToUndefined`). `extras[]` preserves unmodeled directives across an edit round-trip |
-| **Store** | `src/store.ts` — bridges crypto ↔ fs. `loadRaw`/`loadHosts`/`saveHosts` |
+| **Store** | `src/store.ts` — bridges crypto ↔ fs. `loadRaw`/`loadHosts`/`saveHosts`, `sealKeyFile`/`openKeyFile` for pulled keys |
+| **KeyStore** | `src/key-store.ts` — lifecycle of pulled keys: `materializeKeys` decrypts to `run/key-*` for a connection's lifetime, `migratePlaintextKeys` seals any key an older mssh version left plaintext (crash-safe, idempotent, also finishes an interrupted `change-password` re-key) |
 | **AppConfig** | `src/app-config.ts` — `~/.mssh` path layout, `config.yaml`/`.env` loading, `resolvePassword` |
 | **SecureFile** | `src/secure-file.ts` — `writeSecure`/`ensureSecureDir`. POSIX `chmod` / Windows `icacls`. The **only** module that owns permission enforcement |
 | **SSHBinary** | `src/ssh-binary.ts` — `resolveSsh`/`requireSsh`, resolves `ssh` to an absolute path, per-OS install guidance |
@@ -44,6 +45,7 @@ mssh config list                    # list hosts (ALWAYS prompts)
 mssh config add                     # add a host, optional ProxyJump, optional remote key fetch
 mssh config edit [name]             # edit one modeled field
 mssh config delete [name]           # delete a host, warns about dependents
+mssh config migrate-keys            # encrypt any pulled key still left plaintext
 mssh <host> [ssh flags...]          # connect — all flags pass through untouched
 mssh change-password                # re-encrypt the config under a new password (ALWAYS prompts for current)
 mssh version, --version              # print product name, version, author — no prompt, no disk write
@@ -63,7 +65,7 @@ mssh version, --version              # print product name, version, author — n
 - Every write of sensitive data goes through `secure-file.ts`. No raw `writeFileSync`/`mkdirSync`/`Bun.write` anywhere else in `src/`. On Windows, POSIX `mode` is silently ignored, so the `icacls` path must throw rather than leave an exposed file. Saves to the encrypted config (`saveHosts`) go through `writeSecureAtomic` — a same-directory temp file plus `renameSync`, so a write that dies mid-way never truncates or loses the only copy of the ciphertext.
 
 ### Password Routing
-- `resolvePassword({forcePrompt})` is the single place the auth split lives: `true` for bare `mssh`, `config list`, and `change-password`'s current-password step; `false` everywhere else. Changing this at a call site is a security regression.
+- `resolvePassword({forcePrompt})` is the single place the auth split lives: `true` for bare `mssh`, `config list`, and `change-password`'s current-password step; `false` everywhere else, including `config migrate-keys`. Changing this at a call site is a security regression.
 
 ### Command-Executing Directives
 - `EXECUTING_DIRECTIVES` (`src/ssh-config.ts`) is the single source of truth for `ssh_config` directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match`, etc.). `CONFIG_REDIRECTING_DIRECTIVES` (currently just `Include`) covers the other way a directive can reach the same outcome indirectly. `REFUSED_DIRECTIVES` is a derived union of both, exported as the single guard set — `parse()` and `assertSerializable()` (`src/ssh-config.ts`) and `rejectedFlags()` (`src/commands/connect.ts`) all consume `REFUSED_DIRECTIVES`, never `EXECUTING_DIRECTIVES` directly. Add a directive to one of the two source sets, never to `REFUSED_DIRECTIVES` itself — that is the one derivation point and it must never drift into a second copy.

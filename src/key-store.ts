@@ -95,3 +95,11 @@ export function migratePlaintextKeys(keysDir: string, password: string): { migra
 
   return { migrated };
 }
+
+// Shared by every command that calls migratePlaintextKeys, so the message
+// and the silent-when-nothing-migrated rule live in one place.
+export function reportMigratedKeys(migrated: string[]): void {
+  if (migrated.length > 0) {
+    console.error(`Encrypted ${migrated.length} pulled key(s) in ~/.mssh/keys.`);
+  }
+}

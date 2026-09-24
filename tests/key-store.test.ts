@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -7,6 +7,7 @@ import {
   keyTempName,
   materializeKeys,
   migratePlaintextKeys,
+  reportMigratedKeys,
 } from "../src/key-store";
 import { sealKeyFile, openKeyFile } from "../src/store";
 import { isSealedPayload } from "../src/crypto";
@@ -171,6 +172,26 @@ test("materializeKeys leaves a host's IdentityFile untouched when it isn't a man
     expect(tempPaths).toEqual([]);
     expect(materialized[0]?.identityFile).toBe("~/.ssh/id_rsa");
   });
+});
+
+test("reportMigratedKeys prints a count when keys were migrated", () => {
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    reportMigratedKeys(["/home/user/.mssh/keys/jump_ed25519.pem"]);
+    expect(errorSpy).toHaveBeenCalledWith("Encrypted 1 pulled key(s) in ~/.mssh/keys.");
+  } finally {
+    errorSpy.mockRestore();
+  }
+});
+
+test("reportMigratedKeys prints nothing when nothing was migrated", () => {
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    reportMigratedKeys([]);
+    expect(errorSpy).not.toHaveBeenCalled();
+  } finally {
+    errorSpy.mockRestore();
+  }
 });
 
 test("materializeKeys decrypts a key used by two hosts only once", () => {

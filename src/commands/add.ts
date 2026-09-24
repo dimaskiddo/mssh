@@ -9,7 +9,7 @@ import { userInfo } from "node:os";
 import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
 import { discoverDefaultKeyPath, listPulledKeys } from "../local-keys";
 import { loadHosts, saveHosts } from "../store";
-import { materializeKeys } from "../key-store";
+import { materializeKeys, migratePlaintextKeys, reportMigratedKeys } from "../key-store";
 import {
   addHost,
   hostsWithoutProxyJump,
@@ -244,6 +244,7 @@ export async function runAdd(): Promise<void> {
   const password = await resolvePassword(loaded, { forcePrompt: false });
 
   const existingHosts = loadHosts(path, password);
+  reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
   const name = await promptInput(fieldPrompt(HOST_ALIAS_LABEL), {
     validate: (value) => validateNewAlias(value, existingHosts),

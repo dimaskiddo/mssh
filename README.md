@@ -118,9 +118,10 @@ To build all six platform targets: `bun run build:all`.
     ```
 
 ### ✏️ Host Management
-*   **`mssh config add`**: Prompts for hostname/port/user/identity file, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`. If a key was already pulled from that jump host, it's offered for reuse first — no second connection needed.
+*   **`mssh config add`**: Prompts for hostname/port/user/identity file, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`. The pulled key is sealed under the master password before it ever touches disk. If a key was already pulled from that jump host, it's offered for reuse first — no second connection needed.
 *   **`mssh config edit [name]`**: Edits one modeled field on a host (`HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump`). Loads, mutates in memory, and re-encrypts — no plaintext ever hits disk.
 *   **`mssh config delete [name]`**: Deletes a host. Warns if other hosts `ProxyJump` through it before asking for confirmation.
+*   **`mssh config migrate-keys`**: Encrypts any key under `~/.mssh/keys` still left plaintext by an older mssh version. Every other command does this automatically on its next run; this one exists to run it explicitly and see the result (`Encrypted N pulled key(s)...` or `No plaintext keys found.`).
 
 ### 🔌 Connecting
 *   **`mssh <host> [ssh flags...]`**: Connects to a configured host. Flags you pass are forwarded to `ssh` untouched, **except** `-F <path>` and any `-o` option that makes ssh execute a program (`ProxyCommand`, `LocalCommand`, `KnownHostsCommand`, etc.), which are rejected before ssh ever runs — both would silently override or redirect the connection away from the config mssh just decrypted:
@@ -168,13 +169,16 @@ Recognized settings (in either `config.yaml` or `.env`):
 - Backup, cloud-sync, or accidental git commit of your SSH config — on disk it is always ciphertext.
 - Casual shoulder-surfing of your host inventory — listing hosts (`mssh`, `mssh config list`) always requires the password, even if one is stored in `MSSH_PASSWORD`.
 - Other local users reading the decrypted config mid-session — the run directory and the decrypted temp file are both restricted to your user account.
-- Offline brute-force of a stolen `config` — key derivation is deliberately slow and memory-hard, making guessing attempts costly.
+- A private key pulled from a jump host during `mssh config add` — it's sealed under the master password at rest in `~/.mssh/keys`, the same as the config, and decrypted to the restricted run directory only for the lifetime of a connection. A key pulled by an older mssh version is upgraded to sealed automatically the next time any command decrypts your config.
+- Offline brute-force of a stolen `config` or a stolen key under `~/.mssh/keys` — key derivation is deliberately slow and memory-hard, making guessing attempts costly.
 - A hand-imported or hand-edited config turning `mssh <host>` into a launcher for arbitrary programs — directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match exec`, `KnownHostsCommand`, etc.) are dropped on load and refused on save. `ssh` itself is always invoked by its resolved absolute path, never a bare `PATH`-searched name, so a shadowing binary earlier on `PATH` can't run in its place.
 
 ### Does not protect against
 
 - **Key material is never wiped from memory.** The derived encryption key and the master password both live as long-lived `Buffer`/`string` values for the duration of a command, and the decrypted config is held as a JS string, which is immutable and cannot be zeroed. A process memory dump or swapped page during that window can expose them. This is a limitation of using JS strings for secrets, not something a partial fix would meaningfully close.
 - **The encrypted format's version byte is unauthenticated.** The on-disk layout is `version‖salt‖iv‖tag‖ciphertext`, but only the ciphertext is covered by the AEAD tag — the version byte itself is not bound in as associated data. Tampering with it today just changes which error path a corrupted file takes; it becomes a real concern only if a second format version is ever introduced, at which point the version byte must be authenticated (e.g. via `setAAD`) to prevent a downgrade attack.
+- **Sealing a pulled key in place doesn't securely erase the plaintext it replaced.** The write is an atomic rename over the original file, not a wipe — on an SSD or a copy-on-write filesystem, the old plaintext blocks can persist and be recoverable until reclaimed by the device or filesystem itself.
+- **Downgrading to an older mssh version breaks `IdentityFile`.** An older build has no concept of a sealed key and hands ssh the ciphertext as-is, which ssh rejects as a malformed key. Re-run `mssh config add`'s key pull, or restore the key manually, after a downgrade.
 
 ---
 

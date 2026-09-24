@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
 import { ensureSecureDir, writeSecure } from "../secure-file";
 import { loadRaw } from "../store";
-import { materializeKeys } from "../key-store";
+import { materializeKeys, migratePlaintextKeys, reportMigratedKeys } from "../key-store";
 import { requireSsh } from "../ssh-binary";
 import {
   parse,
@@ -174,6 +174,7 @@ export async function runConnect(argv: string[], spawnFn: SpawnFn = spawn): Prom
   requireExistingConfig(path);
   const password = await resolvePassword(loaded, { forcePrompt: false });
   const raw = loadRaw(path, password);
+  reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
   connectWithRaw(raw, argv, password, spawnFn);
 }

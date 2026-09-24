@@ -1,7 +1,8 @@
 // `mssh config delete [name]`: pick (or take by name) a host, warn about any
 // other hosts that ProxyJump through it, confirm, then re-save without it.
-import { configPath, loadSettings, resolvePassword } from "../app-config";
+import { configPath, keysDir, loadSettings, resolvePassword } from "../app-config";
 import { loadHosts, saveHosts } from "../store";
+import { migratePlaintextKeys, reportMigratedKeys } from "../key-store";
 import { deleteHost, hostLabel, proxyJumpAliases, type Host } from "../ssh-config";
 import { promptConfirm } from "../prompt";
 import { findHost, pickHost } from "./edit";
@@ -22,6 +23,7 @@ export async function runDelete(name?: string): Promise<void> {
   const password = await resolvePassword(loaded, { forcePrompt: false });
 
   const hosts = loadHosts(path, password);
+  reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
   let target: Host | undefined;
   let targetName: string;

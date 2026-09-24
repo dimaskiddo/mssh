@@ -1,8 +1,9 @@
 // `mssh config list`: prints host aliases only, never hostname/user/port —
 // this tool exists to keep those encrypted at rest, out of terminal scrollback.
 // `mssh` (bare) is the same list as a picker that connects — see runListConnect.
-import { configPath, loadSettings, resolvePassword } from "../app-config";
+import { configPath, keysDir, loadSettings, resolvePassword } from "../app-config";
 import { loadRaw } from "../store";
+import { migratePlaintextKeys, reportMigratedKeys } from "../key-store";
 import { parse, connectableNames, duplicateAlias, type Host } from "../ssh-config";
 import { promptSelect } from "../prompt";
 import { connectWithRaw, type SpawnFn } from "./connect";
@@ -63,6 +64,7 @@ export async function runList(order: SortOrder = "asc"): Promise<void> {
   const password = await resolvePassword(loaded, { forcePrompt: true });
 
   const hosts = parse(loadRaw(path, password));
+  reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
   if (hosts.length === 0) {
     console.log(NO_HOSTS_MESSAGE);
@@ -93,6 +95,7 @@ export async function runListConnect(order: SortOrder = "asc", spawnFn?: SpawnFn
 
   const raw = loadRaw(path, password);
   const hosts = parse(raw);
+  reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
   if (hosts.length === 0) {
     console.log(NO_HOSTS_MESSAGE);

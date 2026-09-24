@@ -29,11 +29,18 @@ export function staleNames(
 }
 
 const CFG_NAME = /^cfg-(\d+)-[0-9a-f]+$/;
+const KEY_NAME = /^key-(\d+)-[0-9a-f]+$/;
 const TMP_NAME = /\.tmp-(\d+)-[0-9a-f]+$/;
 
 // Matches connect.ts's tempConfigName() convention.
 export function cfgPid(name: string): number | undefined {
   const digits = CFG_NAME.exec(name)?.[1];
+  return digits === undefined ? undefined : Number(digits);
+}
+
+// Matches key-store.ts's keyTempName() convention.
+export function keyPid(name: string): number | undefined {
+  const digits = KEY_NAME.exec(name)?.[1];
   return digits === undefined ? undefined : Number(digits);
 }
 
@@ -64,7 +71,8 @@ function sweepDir(dir: string, matches: (name: string) => boolean, pidOf: (name:
 
 // Called once per invocation, before any command touches ~/.mssh — mirrors
 // index.ts's migrateLegacyConfig() placement.
-export function sweepOrphanedTempFiles(runDir: string, configDir: string): void {
-  sweepDir(runDir, (name) => CFG_NAME.test(name), cfgPid);
+export function sweepOrphanedTempFiles(runDir: string, configDir: string, keysDir: string): void {
+  sweepDir(runDir, (name) => CFG_NAME.test(name) || KEY_NAME.test(name), (name) => cfgPid(name) ?? keyPid(name));
   sweepDir(configDir, (name) => TMP_NAME.test(name), tmpPid);
+  sweepDir(keysDir, (name) => TMP_NAME.test(name), tmpPid);
 }

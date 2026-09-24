@@ -6,12 +6,12 @@
 export { pickHomeDir, msshRootDir, expandHome, parseEnvText, pickSettings, selectStoredPassword, loadSettingsFrom } from "./app-config";
 export { unquote, decodeValue, stripComment, isValidHostName, EXECUTING_DIRECTIVES, KEEP_ALIVE_INTERVAL, rewriteIdentityFiles } from "./ssh-config";
 export { isSealedPayload } from "./crypto";
-export { managedKeyPath, keyTempName } from "./key-store";
+export { managedKeyPath, keyTempName, migratePlaintextKeys, reportMigratedKeys } from "./key-store";
 export { ALIGNED_LABELS } from "./field-labels";
 export { isValidKeyFilename } from "./remote-keys";
 export { pickDefaultKeyName, pulledKeyNamesFor } from "./local-keys";
 export { resolveSsh, installGuidance } from "./ssh-binary";
-export { isPidAlive, staleNames, cfgPid, tmpPid } from "./sweep";
+export { isPidAlive, staleNames, cfgPid, keyPid, tmpPid } from "./sweep";
 export { defaultUsername, buildNewHost, tempConfigRunner, preflightArgv, validateNewAlias } from "./commands/add";
 export { reseal, changePassword } from "./commands/change-password";
 export { forwardsTermAndHup, rejectedFlags, childExitCode } from "./commands/connect";

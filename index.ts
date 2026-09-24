@@ -6,11 +6,13 @@ import { runList, runListConnect, parseSortFlag } from "./src/commands/list";
 import { runAdd } from "./src/commands/add";
 import { runEdit } from "./src/commands/edit";
 import { runDelete } from "./src/commands/delete";
+import { runMigrateKeys } from "./src/commands/migrate-keys";
 import { runConnect } from "./src/commands/connect";
 import { runChangePassword } from "./src/commands/change-password";
 import {
   configPath,
   defaultEncConfigPath,
+  keysDir,
   legacyEncConfigPath,
   loadSettings,
   migrateLegacyConfigFrom,
@@ -33,6 +35,7 @@ Usage:
   mssh config add                         add a host
   mssh config edit [name]                 edit one modeled field on a host
   mssh config delete [name]               delete a host
+  mssh config migrate-keys                encrypt any pulled key still left plaintext
   mssh <host> [ssh flags...]            connect to a host
   mssh version, --version               show the version
   mssh --help, -h                       show this help`;
@@ -48,7 +51,7 @@ function migrateLegacyConfig(settings: Settings): void {
 }
 
 function sweepTempFiles(settings: Settings): void {
-  sweepOrphanedTempFiles(runDir(), dirname(configPath(settings)));
+  sweepOrphanedTempFiles(runDir(), dirname(configPath(settings)), keysDir());
 }
 
 // Silent trailing args (`mssh setup anything`) look like they configured
@@ -126,7 +129,13 @@ async function main(): Promise<void> {
       return;
     }
 
-    fatal("Usage: mssh config <list|add|edit|delete>");
+    if (sub === "migrate-keys") {
+      rejectExtraArgs(subRest);
+      await runMigrateKeys();
+      return;
+    }
+
+    fatal("Usage: mssh config <list|add|edit|delete|migrate-keys>");
   }
 
   const argv = process.argv.slice(2);

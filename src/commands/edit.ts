@@ -1,8 +1,9 @@
 // `mssh config edit [name]`: pick (or take by name) a host, pick a modeled
 // field, prompt a new value, and re-save the whole config. No plaintext file
 // ever hits disk — load, mutate in memory, re-encrypt.
-import { configPath, loadSettings, resolvePassword } from "../app-config";
+import { configPath, keysDir, loadSettings, resolvePassword } from "../app-config";
 import { loadHosts, saveHosts } from "../store";
+import { migratePlaintextKeys, reportMigratedKeys } from "../key-store";
 import {
   updateHostField,
   hostsWithoutProxyJump,
@@ -93,6 +94,7 @@ export async function runEdit(name?: string): Promise<void> {
   const password = await resolvePassword(loaded, { forcePrompt: false });
 
   const hosts = loadHosts(path, password);
+  reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
   let target: Host | undefined;
   let targetName: string;
