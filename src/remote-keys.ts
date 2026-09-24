@@ -1,6 +1,6 @@
 // Reaches a remote jump host's ~/.ssh over an existing ssh connection to list
 // and download key files. Every remote call is an argv array, never a shell string.
-import { writeSecureAtomic } from "./secure-file";
+import { sealKeyFile } from "./store";
 
 export type RemoteRunner = (
   sshTarget: string,
@@ -79,6 +79,7 @@ export function downloadRemoteKey(
   filename: string,
   localPath: string,
   runner: RemoteRunner,
+  password: string,
 ): void {
   if (!isValidKeyFilename(filename)) {
     throw new Error(`invalid key filename: ${filename}`);
@@ -89,8 +90,9 @@ export function downloadRemoteKey(
     throw new Error(`failed to download remote key ${filename} from ${sshTarget}: ${remoteFailureReason(result)}`);
   }
 
-  // Atomic: on an overwrite, a failure mid-write must leave the existing key
-  // intact rather than truncating it. The unlink-on-failure this replaces
-  // deleted the very file the user had just chosen to keep.
-  writeSecureAtomic(localPath, result.stdout);
+  // Sealed at rest, never plaintext. Atomic: on an overwrite, a failure
+  // mid-write must leave the existing key intact rather than truncating it.
+  // The unlink-on-failure this replaces deleted the very file the user had
+  // just chosen to keep.
+  sealKeyFile(localPath, result.stdout, password);
 }

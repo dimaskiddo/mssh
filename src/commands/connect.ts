@@ -8,9 +8,10 @@ import { existsSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:os";
 import { join } from "node:path";
-import { configPath, loadSettings, resolvePassword, runDir } from "../app-config";
+import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
 import { ensureSecureDir, writeSecure } from "../secure-file";
 import { loadRaw } from "../store";
+import { materializeKeys } from "../key-store";
 import { requireSsh } from "../ssh-binary";
 import {
   parse,
@@ -87,7 +88,7 @@ function argvTargets(argv: string[], hosts: Host[]): string[] {
 
 // Shared by runConnect and list.ts's bare-`mssh` picker, so every path that
 // writes plaintext to disk is guarded by rejectedFlags()/requireSsh() the same way.
-export function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = spawn, hosts?: Host[]): void {
+export function connectWithRaw(raw: string, argv: string[], password: string, spawnFn: SpawnFn = spawn, hosts?: Host[]): void {
   const rejected = rejectedFlags(argv);
   if (rejected !== undefined) {
     throw new Error(`refusing to pass ${rejected} through: it would override the managed config`);
@@ -97,6 +98,7 @@ export function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = s
 
   ensureSecureDir(runDir());
   const tmpPath = join(runDir(), tempConfigName(process.pid, randomBytes(8).toString("hex")));
+  const keyTempPaths: string[] = [];
 
   // Registered before writeSecure(), not after, so the temp file is cleaned
   // up even if the write or its permission lockdown fails partway.
@@ -108,6 +110,13 @@ export function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = s
       if (existsSync(tmpPath)) unlinkSync(tmpPath);
     } catch {
       // best-effort; nothing more useful to do at exit time
+    }
+    for (const keyTempPath of keyTempPaths) {
+      try {
+        if (existsSync(keyTempPath)) unlinkSync(keyTempPath);
+      } catch {
+        // best-effort; nothing more useful to do at exit time
+      }
     }
   };
   process.on("exit", cleanup); // portable safety net, covers writeSecure() failures too
@@ -126,7 +135,11 @@ export function connectWithRaw(raw: string, argv: string[], spawnFn: SpawnFn = s
     }
   }
 
-  const scoped = serialize(withKeepAlive(hostsForTarget(allHosts, targets)));
+  // Decrypts each scoped host's managed key (if sealed) into runDir and
+  // rewrites IdentityFile to the temp copy — only for the temp config below,
+  // never for anything saveHosts writes back to the sealed config.
+  const targetHosts = materializeKeys(hostsForTarget(allHosts, targets), password, keysDir(), runDir(), keyTempPaths);
+  const scoped = serialize(withKeepAlive(targetHosts));
 
   // "wx" so a pre-existing file at this path is an error, never silently
   // written through. Do not relax to "w".
@@ -162,5 +175,5 @@ export async function runConnect(argv: string[], spawnFn: SpawnFn = spawn): Prom
   const password = await resolvePassword(loaded, { forcePrompt: false });
   const raw = loadRaw(path, password);
 
-  await connectWithRaw(raw, argv, spawnFn);
+  connectWithRaw(raw, argv, password, spawnFn);
 }

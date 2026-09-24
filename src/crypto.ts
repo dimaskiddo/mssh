@@ -25,19 +25,27 @@ function deriveKey(passwordText: string, salt: Buffer): Buffer {
   return scryptSync(passwordText, salt, KEY_LENGTH, KDF);
 }
 
-export function seal(plaintext: string, passwordText: string): Buffer {
+// Cheap, password-free classification used to tell an already-sealed key
+// file from a still-plaintext one. The version byte alone isn't proof of
+// authenticity (see README's threat model) — GCM still enforces that on open.
+export function isSealedPayload(bytes: Buffer): boolean {
+  return bytes.length >= HEADER_LENGTH && bytes[0] === VERSION;
+}
+
+export function seal(plaintext: string | Buffer, passwordText: string): Buffer {
   const salt = randomBytes(SALT_LENGTH);
   const iv = randomBytes(IV_LENGTH);
   const key = deriveKey(passwordText, salt);
 
   const cipher = createCipheriv(ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const input = typeof plaintext === "string" ? Buffer.from(plaintext, "utf8") : plaintext;
+  const ciphertext = Buffer.concat([cipher.update(input), cipher.final()]);
   const tag = cipher.getAuthTag();
 
   return Buffer.concat([Buffer.from([VERSION]), salt, iv, tag, ciphertext]);
 }
 
-export function open(payload: Buffer, passwordText: string): string {
+export function openBytes(payload: Buffer, passwordText: string): Buffer {
   if (payload.length < HEADER_LENGTH) {
     throw new Error("Invalid payload: too short");
   }
@@ -59,6 +67,9 @@ export function open(payload: Buffer, passwordText: string): string {
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
 
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plaintext.toString("utf8");
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+export function open(payload: Buffer, passwordText: string): string {
+  return openBytes(payload, passwordText).toString("utf8");
 }

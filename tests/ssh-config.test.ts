@@ -18,6 +18,7 @@ import {
   connectableNames,
   duplicateAlias,
   REFUSED_DIRECTIVES,
+  rewriteIdentityFiles,
   type Host,
 } from "../src/ssh-config";
 import { isValidHostName, KEEP_ALIVE_INTERVAL, unquote, decodeValue, stripComment, EXECUTING_DIRECTIVES } from "../src/internal";
@@ -750,4 +751,29 @@ test("serialize accepts the result of deleteHost repairing a duplicate-bearing c
 test("parse stays permissive: it returns both blocks for a duplicate-alias config, unlike the strict serialize", () => {
   const dup = parse("Host web1\n  HostName first.example\n\nHost web1\n  HostName second.example\n");
   expect(dup).toHaveLength(2);
+});
+
+test("rewriteIdentityFiles points a mapped host's IdentityFile at the temp path", () => {
+  const hosts: Host[] = [{ names: ["web1"], identityFile: "/home/user/.mssh/keys/jump_ed25519.pem", extras: [] }];
+  const mapping = new Map([["/home/user/.mssh/keys/jump_ed25519.pem", "/home/user/.mssh/run/key-123-abc"]]);
+  const rewritten = rewriteIdentityFiles(hosts, mapping);
+  expect(rewritten[0]?.identityFile).toBe("/home/user/.mssh/run/key-123-abc");
+});
+
+test("rewriteIdentityFiles leaves a host with no matching entry in the mapping unchanged", () => {
+  const hosts: Host[] = [{ names: ["web1"], identityFile: "~/.ssh/id_rsa", extras: [] }];
+  const rewritten = rewriteIdentityFiles(hosts, new Map());
+  expect(rewritten[0]?.identityFile).toBe("~/.ssh/id_rsa");
+});
+
+test("rewriteIdentityFiles leaves a host with no IdentityFile at all unchanged", () => {
+  const hosts: Host[] = [{ names: ["web1"], extras: [] }];
+  const rewritten = rewriteIdentityFiles(hosts, new Map([["/anything", "/other"]]));
+  expect(rewritten[0]?.identityFile).toBeUndefined();
+});
+
+test("rewriteIdentityFiles does not mutate the input hosts array", () => {
+  const original: Host[] = [{ names: ["web1"], identityFile: "/k/a.pem", extras: [] }];
+  rewriteIdentityFiles(original, new Map([["/k/a.pem", "/tmp/x"]]));
+  expect(original[0]?.identityFile).toBe("/k/a.pem");
 });

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../src/remote-keys";
 import { isValidKeyFilename, isValidHostName } from "../src/internal";
+import { openKeyFile } from "../src/store";
+import { isSealedPayload } from "../src/crypto";
 import { withScratchDir as scratch } from "./helpers";
 
 const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-remote-keys-test-", fn);
@@ -118,7 +120,7 @@ test("listRemoteKeys throws on spawn error", () => {
   expect(() => listRemoteKeys("jumphost", failingRunner)).toThrow();
 });
 
-test("downloadRemoteKey writes the downloaded content to localPath via writeSecure", () => {
+test("downloadRemoteKey seals the downloaded content at localPath, not plaintext", () => {
   withScratchDir((dir) => {
     const localPath = join(dir, "id_rsa");
     const content = "-----BEGIN OPENSSH PRIVATE KEY-----\nfakekeydata\n-----END OPENSSH PRIVATE KEY-----\n";
@@ -128,10 +130,13 @@ test("downloadRemoteKey writes the downloaded content to localPath via writeSecu
       return { status: 0, stdout: Buffer.from(content, "utf8"), stderr: "" };
     };
 
-    downloadRemoteKey("jumphost", "id_rsa", localPath, runner);
+    downloadRemoteKey("jumphost", "id_rsa", localPath, runner, "correct-horse");
 
     expect(capturedArgv).toEqual(["cat", "~/.ssh/id_rsa"]);
-    expect(readFileSync(localPath, "utf8")).toBe(content);
+    const onDisk = readFileSync(localPath);
+    expect(isSealedPayload(onDisk)).toBe(true);
+    expect(onDisk.includes("fakekeydata")).toBe(false);
+    expect(openKeyFile(localPath, "correct-horse").toString("utf8")).toBe(content);
   });
 });
 
@@ -140,7 +145,7 @@ test("downloadRemoteKey rejects an invalid filename without calling the runner a
     const localPath = join(dir, "evil");
     const runner = mock<RemoteRunner>(() => ({ status: 0, stdout: Buffer.alloc(0), stderr: "" }));
 
-    expect(() => downloadRemoteKey("jumphost", "../evil", localPath, runner)).toThrow();
+    expect(() => downloadRemoteKey("jumphost", "../evil", localPath, runner, "correct-horse")).toThrow();
     expect(runner).toHaveBeenCalledTimes(0);
     expect(existsSync(localPath)).toBe(false);
   });
@@ -151,7 +156,7 @@ test("downloadRemoteKey throws and writes nothing when the remote command fails"
     const localPath = join(dir, "id_rsa");
     const failingRunner: RemoteRunner = () => ({ status: 1, stdout: Buffer.alloc(0), stderr: "no such file" });
 
-    expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, failingRunner)).toThrow();
+    expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, failingRunner, "correct-horse")).toThrow();
     expect(existsSync(localPath)).toBe(false);
   });
 });
@@ -171,7 +176,7 @@ test("downloadRemoteKey unlinks a partially-written key if writeSecure's lockdow
         stderr: "",
       });
 
-      expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, runner)).toThrow();
+      expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, runner, "correct-horse")).toThrow();
       expect(existsSync(localPath)).toBe(false);
     });
   } finally {
@@ -195,7 +200,7 @@ test("downloadRemoteKey leaves an existing key intact when the overwrite write f
         stderr: "",
       });
 
-      expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, runner)).toThrow();
+      expect(() => downloadRemoteKey("jumphost", "id_rsa", localPath, runner, "correct-horse")).toThrow();
       expect(readFileSync(localPath, "utf8")).toBe(originalContent);
     });
   } finally {
@@ -210,8 +215,8 @@ test("downloadRemoteKey replaces the content of an existing key on a successful 
     const newContent = "-----BEGIN OPENSSH PRIVATE KEY-----\nnewkeydata\n-----END OPENSSH PRIVATE KEY-----\n";
     const runner: RemoteRunner = () => ({ status: 0, stdout: Buffer.from(newContent, "utf8"), stderr: "" });
 
-    downloadRemoteKey("jumphost", "id_rsa", localPath, runner);
+    downloadRemoteKey("jumphost", "id_rsa", localPath, runner, "correct-horse");
 
-    expect(readFileSync(localPath, "utf8")).toBe(newContent);
+    expect(openKeyFile(localPath, "correct-horse").toString("utf8")).toBe(newContent);
   });
 });

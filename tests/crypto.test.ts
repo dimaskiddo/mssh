@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { seal, open, UnsupportedVersionError } from "../src/crypto";
+import { seal, open, openBytes, isSealedPayload, UnsupportedVersionError } from "../src/crypto";
 
 const HEADER_LENGTH = 1 + 16 + 12 + 16;
 
@@ -66,4 +66,23 @@ test("two seals of the same plaintext/password differ, and both open correctly",
   expect(a.equals(b)).toBe(false);
   expect(open(a, password)).toBe(plaintext);
   expect(open(b, password)).toBe(plaintext);
+});
+
+test("seal/openBytes round-trips non-UTF-8 binary data unchanged", () => {
+  const raw = Buffer.from([0x00, 0xff, 0x10, 0xfe, 0x80, 0x81, 0x00, 0x7f]);
+  const payload = seal(raw, "correct-horse");
+  const opened = openBytes(payload, "correct-horse");
+  expect(opened.equals(raw)).toBe(true);
+});
+
+test("isSealedPayload is true for a sealed buffer", () => {
+  const payload = seal("secret data", "correct-horse");
+  expect(isSealedPayload(payload)).toBe(true);
+});
+
+test("isSealedPayload is false for OpenSSH PEM, PuTTY, DER and short inputs", () => {
+  expect(isSealedPayload(Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\n"))).toBe(false);
+  expect(isSealedPayload(Buffer.from("PuTTY-User-Key-File-3: ssh-ed25519\n"))).toBe(false);
+  expect(isSealedPayload(Buffer.from([0x30, 0x82, 0x01, 0x00]))).toBe(false);
+  expect(isSealedPayload(Buffer.alloc(10))).toBe(false);
 });

@@ -2,7 +2,7 @@
 // crypto+fs+parse plumbing — no CLI, prompting, or path resolution here
 // (that's app-config.ts's job); callers pass explicit paths and passwords.
 import { existsSync, readFileSync } from "node:fs";
-import { seal, open, UnsupportedVersionError } from "./crypto";
+import { seal, open, openBytes, UnsupportedVersionError } from "./crypto";
 import { parse, serialize, withKeepAlive, type Host } from "./ssh-config";
 import { writeSecureAtomic } from "./secure-file";
 
@@ -11,8 +11,24 @@ import { writeSecureAtomic } from "./secure-file";
 // `mssh setup`, destroying a config they were never actually locked out of.
 const RESOURCE_ERROR_CODES = new Set(["ERR_CRYPTO_OUT_OF_MEMORY", "ERR_CRYPTO_INVALID_SCRYPT_PARAMS", "ENOMEM"]);
 
-// open() doesn't distinguish wrong password from a tampered payload, and its
-// message could echo internals — always throw one opaque message instead.
+// Shared by loadRaw (config) and openKeyFile (pulled keys) — a decrypt
+// failure never distinguishes wrong password from tampering on either path,
+// and neither message may echo internals.
+function foldDecryptError(err: unknown, what: string): never {
+  if (err instanceof UnsupportedVersionError) throw err;
+
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code !== undefined && RESOURCE_ERROR_CODES.has(code)) {
+    throw new Error(`failed to decrypt ${what}: resource error, not a wrong password (${(err as Error).message})`);
+  }
+  // A TypeError here means a refactor broke a call signature, not a mistyped password.
+  if (err instanceof TypeError) {
+    throw new Error(`failed to decrypt ${what}: internal error, not a wrong password (${(err as Error).message})`);
+  }
+
+  throw new Error(`failed to decrypt ${what}: wrong password or corrupted file`);
+}
+
 export function loadRaw(path: string, password: string): string {
   if (!existsSync(path)) {
     throw new Error(`no config found at ${path}`);
@@ -24,19 +40,29 @@ export function loadRaw(path: string, password: string): string {
   try {
     return open(payload, password);
   } catch (err) {
-    if (err instanceof UnsupportedVersionError) throw err;
-
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== undefined && RESOURCE_ERROR_CODES.has(code)) {
-      throw new Error(`failed to decrypt config: resource error, not a wrong password (${(err as Error).message})`);
-    }
-    // A TypeError here means a refactor broke a call signature, not a mistyped password.
-    if (err instanceof TypeError) {
-      throw new Error(`failed to decrypt config: internal error, not a wrong password (${(err as Error).message})`);
-    }
-
-    throw new Error("failed to decrypt config: wrong password or corrupted file");
+    foldDecryptError(err, "config");
   }
+}
+
+// Reads and decrypts a pulled key file sealed by sealKeyFile. The error
+// names the path, never the key's own bytes.
+export function openKeyFile(path: string, password: string): Buffer {
+  const payload = readFileSync(path);
+  try {
+    return openBytes(payload, password);
+  } catch (err) {
+    foldDecryptError(err, `key at ${path}`);
+  }
+}
+
+// Verifies the sealed copy decrypts back to the exact input before it can
+// ever replace what's on disk — writeSecureAtomic then makes that replacement atomic.
+export function sealKeyFile(path: string, bytes: Buffer, password: string): void {
+  const sealed = seal(bytes, password);
+  if (!openBytes(sealed, password).equals(bytes)) {
+    throw new Error(`failed to verify sealed key before writing ${path}`);
+  }
+  writeSecureAtomic(path, sealed);
 }
 
 export function loadHosts(path: string, password: string): Host[] {

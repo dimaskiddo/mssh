@@ -6,18 +6,32 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import type { SpawnFn } from "../src/commands/connect";
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import * as nodeOs from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seal } from "../src/crypto";
+import { sealKeyFile } from "../src/store";
+import { ensureSecureDir } from "../src/secure-file";
 import * as realAppConfig from "../src/app-config";
 
 const scratchRoot = mkdtempSync(join(tmpdir(), "mssh-connect-spawn-test-"));
 const scratchRunDir = join(scratchRoot, "run");
+// keysDir() is left to app-config's real implementation (homeDir()-derived) —
+// overriding it directly in the mock below, like runDir, would get baked
+// into other test files' own `...realAppConfig` spreads at collection time
+// (mock.module mutates the shared registry immediately, not per-file) and
+// leak into files that never asked for a fake keysDir. Spying on os.homedir()
+// instead only affects calls made while this file's tests are running, and
+// is restored in afterAll before any other file's tests run.
+const scratchHomeDir = join(scratchRoot, "home");
+const scratchKeysDir = join(scratchHomeDir, ".mssh", "keys");
 const configFilePath = join(scratchRoot, "ssh_config.enc");
 const TEST_PASSWORD = "fixed-test-password";
 const sealedRaw = "Host web1\n  HostName 10.0.0.1\n";
 
 writeFileSync(configFilePath, seal(sealedRaw, TEST_PASSWORD));
+ensureSecureDir(scratchKeysDir);
+const homedirSpy = spyOn(nodeOs, "homedir").mockReturnValue(scratchHomeDir);
 
 mock.module("../src/app-config", () => ({
   ...realAppConfig,
@@ -31,6 +45,7 @@ const { runConnect, connectWithRaw } = await import("../src/commands/connect");
 
 afterAll(() => {
   mock.module("../src/app-config", () => realAppConfig);
+  homedirSpy.mockRestore();
   rmSync(scratchRoot, { recursive: true, force: true });
 });
 
@@ -54,7 +69,7 @@ test("temp config is written, then removed once ssh exits", async () => {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
   try {
     const fake = new FakeChild();
-    await connectWithRaw(sealedRaw, ["web1"], fakeSpawn(fake));
+    await connectWithRaw(sealedRaw, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
 
     expect(tempFilesIn(scratchRunDir).length).toBe(1);
 
@@ -76,7 +91,7 @@ test("the temp file is cleaned up by a process-exit handler, independent of the 
   const onSpy = spyOn(process, "on");
   try {
     const fake = new FakeChild();
-    await connectWithRaw(sealedRaw, ["web1"], fakeSpawn(fake));
+    await connectWithRaw(sealedRaw, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
 
     expect(tempFilesIn(scratchRunDir).length).toBe(1);
 
@@ -97,7 +112,7 @@ test("temp config is removed even when spawning ssh itself fails", async () => {
   const errorSpy = spyOn(console, "error").mockImplementation(() => {});
   try {
     const fake = new FakeChild();
-    await connectWithRaw(sealedRaw, ["web1"], fakeSpawn(fake));
+    await connectWithRaw(sealedRaw, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
 
     expect(tempFilesIn(scratchRunDir).length).toBe(1);
 
@@ -112,12 +127,12 @@ test("temp config is removed even when spawning ssh itself fails", async () => {
 });
 
 test("connectWithRaw rejects -F itself, so no caller (runConnect or the bare-mssh picker) can bypass the guard", async () => {
-  expect(() => connectWithRaw(sealedRaw, ["web1", "-F", "/tmp/other"])).toThrow(/refusing to pass -F/);
+  expect(() => connectWithRaw(sealedRaw, ["web1", "-F", "/tmp/other"], TEST_PASSWORD)).toThrow(/refusing to pass -F/);
   expect(tempFilesIn(scratchRunDir).length).toBe(0);
 });
 
 test("connectWithRaw refuses a target matching no configured alias, instead of silently dropping its ProxyJump", async () => {
-  expect(() => connectWithRaw(sealedRaw, ["typo-host"])).toThrow(
+  expect(() => connectWithRaw(sealedRaw, ["typo-host"], TEST_PASSWORD)).toThrow(
     /"typo-host" is not a configured host alias/,
   );
   expect(tempFilesIn(scratchRunDir).length).toBe(0);
@@ -128,7 +143,7 @@ test("temp config contains only the target host, not other unrelated hosts", asy
   try {
     const multiHostRaw = "Host web1\n  HostName 10.0.0.1\n\nHost web2\n  HostName 10.0.0.2\n  User admin\n";
     const fake = new FakeChild();
-    await connectWithRaw(multiHostRaw, ["web1"], fakeSpawn(fake));
+    await connectWithRaw(multiHostRaw, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
 
     const [tempName] = tempFilesIn(scratchRunDir);
     expect(tempName).toBeDefined();
@@ -150,7 +165,7 @@ test("temp config includes the target's ProxyJump chain but not unrelated hosts"
     const chainedRaw =
       "Host target\n  HostName 10.0.0.1\n  ProxyJump bastion\n\nHost bastion\n  HostName 10.0.0.2\n\nHost unrelated\n  HostName 10.0.0.3\n";
     const fake = new FakeChild();
-    await connectWithRaw(chainedRaw, ["target"], fakeSpawn(fake));
+    await connectWithRaw(chainedRaw, ["target"], TEST_PASSWORD, fakeSpawn(fake));
 
     const [tempName] = tempFilesIn(scratchRunDir);
     expect(tempName).toBeDefined();
@@ -158,6 +173,83 @@ test("temp config includes the target's ProxyJump chain but not unrelated hosts"
     expect(contents).toContain("Host target");
     expect(contents).toContain("Host bastion");
     expect(contents).not.toContain("unrelated");
+
+    fake.emit("exit", 0, null);
+  } finally {
+    exitSpy.mockRestore();
+  }
+});
+
+test("a sealed managed key is decrypted into run/key-* and its temp file removed on exit", async () => {
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
+  try {
+    const keyBytes = Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\nsecretbytes\n-----END OPENSSH PRIVATE KEY-----\n");
+    const keyPath = join(scratchKeysDir, "web1_ed25519.pem");
+    sealKeyFile(keyPath, keyBytes, TEST_PASSWORD);
+
+    const rawWithKey = `Host web1\n  HostName 10.0.0.1\n  IdentityFile ${keyPath}\n`;
+    const fake = new FakeChild();
+    connectWithRaw(rawWithKey, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
+
+    const runFiles = tempFilesIn(scratchRunDir);
+    const keyTempName = runFiles.find((name) => name.startsWith("key-"));
+    expect(keyTempName).toBeDefined();
+    const keyTempPath = join(scratchRunDir, keyTempName as string);
+    expect(readFileSync(keyTempPath).equals(keyBytes)).toBe(true);
+
+    const cfgName = runFiles.find((name) => name.startsWith("cfg-"));
+    const cfgContents = readFileSync(join(scratchRunDir, cfgName as string), "utf8");
+    expect(cfgContents).toContain(keyTempPath);
+    expect(cfgContents).not.toContain(keyPath);
+
+    fake.emit("exit", 0, null);
+
+    expect(tempFilesIn(scratchRunDir).length).toBe(0);
+  } finally {
+    exitSpy.mockRestore();
+  }
+});
+
+test("only the target host's managed key is decrypted, not an unrelated host's", async () => {
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
+  try {
+    const targetKeyBytes = Buffer.from("target-key-bytes");
+    const targetKeyPath = join(scratchKeysDir, "web1_target.pem");
+    sealKeyFile(targetKeyPath, targetKeyBytes, TEST_PASSWORD);
+
+    const otherKeyBytes = Buffer.from("other-key-bytes");
+    const otherKeyPath = join(scratchKeysDir, "web2_other.pem");
+    sealKeyFile(otherKeyPath, otherKeyBytes, TEST_PASSWORD);
+
+    const rawTwoHosts =
+      `Host web1\n  HostName 10.0.0.1\n  IdentityFile ${targetKeyPath}\n\n` +
+      `Host web2\n  HostName 10.0.0.2\n  IdentityFile ${otherKeyPath}\n`;
+    const fake = new FakeChild();
+    connectWithRaw(rawTwoHosts, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
+
+    const runFiles = tempFilesIn(scratchRunDir);
+    const keyTempNames = runFiles.filter((name) => name.startsWith("key-"));
+    expect(keyTempNames.length).toBe(1);
+
+    fake.emit("exit", 0, null);
+  } finally {
+    exitSpy.mockRestore();
+  }
+});
+
+test("the sealed config on disk is unchanged by a connect that materializes a key", async () => {
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
+  try {
+    const before = readFileSync(configFilePath);
+    const keyBytes = Buffer.from("unrelated-connect-key");
+    const keyPath = join(scratchKeysDir, "web1_unchanged.pem");
+    sealKeyFile(keyPath, keyBytes, TEST_PASSWORD);
+
+    const rawWithKey = `Host web1\n  HostName 10.0.0.1\n  IdentityFile ${keyPath}\n`;
+    const fake = new FakeChild();
+    connectWithRaw(rawWithKey, ["web1"], TEST_PASSWORD, fakeSpawn(fake));
+
+    expect(readFileSync(configFilePath).equals(before)).toBe(true);
 
     fake.emit("exit", 0, null);
   } finally {

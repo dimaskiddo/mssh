@@ -9,6 +9,7 @@ import { userInfo } from "node:os";
 import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
 import { discoverDefaultKeyPath, listPulledKeys } from "../local-keys";
 import { loadHosts, saveHosts } from "../store";
+import { materializeKeys } from "../key-store";
 import {
   addHost,
   hostsWithoutProxyJump,
@@ -117,7 +118,7 @@ async function reuseExistingKey(jumpAlias: string): Promise<string | undefined> 
   ]);
 }
 
-async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<string | undefined> {
+async function extractJumpHostKey(jumpHost: Host, jumpAlias: string, password: string): Promise<string | undefined> {
   const reused = await reuseExistingKey(jumpAlias);
   if (reused !== undefined) return reused;
 
@@ -128,6 +129,7 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
   // Shared control connection avoids re-running the full auth handshake (and MFA) twice.
   const controlPath = join(runDir(), `cm-${randomBytes(8).toString("hex")}`);
   const runner = tempConfigRunner(tmpPath, sshPath);
+  const keyTempPaths: string[] = [];
 
   // Safety net for a signal arriving mid-prompt, which would skip the finally block below (mirrors connect.ts).
   let cleaned = false;
@@ -144,12 +146,22 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
     } catch {
       // best-effort
     }
+    for (const keyTempPath of keyTempPaths) {
+      try {
+        if (existsSync(keyTempPath)) unlinkSync(keyTempPath);
+      } catch {
+        // best-effort
+      }
+    }
   };
   process.on("exit", cleanup);
 
   try {
+    // The bastion's own IdentityFile may itself be a sealed pulled key —
+    // materialize it before ssh ever tries to read it for this handshake.
+    const [materializedJumpHost] = materializeKeys([jumpHost], password, keysDir(), runDir(), keyTempPaths);
     const hostForTemp: Host = {
-      ...jumpHost,
+      ...(materializedJumpHost ?? jumpHost),
       extras: [
         ...jumpHost.extras,
         { key: "ControlMaster", value: "auto" },
@@ -200,7 +212,7 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string): Promise<st
       if (!overwrite) return localPath;
     }
 
-    downloadRemoteKey(jumpAlias, selected, localPath, runner);
+    downloadRemoteKey(jumpAlias, selected, localPath, runner, password);
 
     return localPath;
   } finally {
@@ -282,7 +294,7 @@ export async function runAdd(): Promise<void> {
       { default: false },
     );
     if (wantsExtraction) {
-      pulledKeyPath = await extractJumpHostKey(jumpSelection.host, jumpSelection.pattern);
+      pulledKeyPath = await extractJumpHostKey(jumpSelection.host, jumpSelection.pattern, password);
     }
   }
 

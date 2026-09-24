@@ -100,5 +100,5 @@ export async function runListConnect(order: SortOrder = "asc", spawnFn?: SpawnFn
   }
 
   const selected = await promptSelect<string>(fieldPrompt(CONNECT_TO_LABEL), hostChoices(hosts, order));
-  await connectWithRaw(raw, [selected], spawnFn, hosts);
+  connectWithRaw(raw, [selected], password, spawnFn, hosts);
 }

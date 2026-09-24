@@ -481,3 +481,15 @@ export function withKeepAlive(hosts: Host[]): Host[] {
 export function emptyToUndefined(value: string): string | undefined {
   return value === "" ? undefined : value;
 }
+
+// Points IdentityFile at a temp decrypted copy for the lifetime of one
+// connect/handshake — used only on the in-memory hosts written to a temp
+// config, never on what saveHosts seals to disk.
+export function rewriteIdentityFiles(hosts: Host[], mapping: Map<string, string>): Host[] {
+  return hosts.map((host) => {
+    if (host.identityFile === undefined) return host;
+    const tempPath = mapping.get(host.identityFile);
+    if (tempPath === undefined) return host;
+    return { ...host, identityFile: tempPath };
+  });
+}

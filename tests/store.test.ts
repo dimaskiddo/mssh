@@ -1,7 +1,7 @@
 import { test, expect, mock } from "bun:test";
 import { join } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
-import { loadRaw, loadHosts, saveHosts } from "../src/store";
+import { loadRaw, loadHosts, saveHosts, sealKeyFile, openKeyFile } from "../src/store";
 import { parse, withKeepAlive } from "../src/ssh-config";
 import type { Host } from "../src/ssh-config";
 import * as realCrypto from "../src/crypto";
@@ -173,6 +173,52 @@ test("loadRaw reports an internal TypeError distinctly instead of folding it int
     } finally {
       mock.module("../src/crypto", () => realCrypto);
     }
+  });
+});
+
+test("sealKeyFile then openKeyFile round-trips binary key bytes at the same path", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "jump_ed25519.pem");
+    const keyBytes = Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END OPENSSH PRIVATE KEY-----\n");
+
+    sealKeyFile(path, keyBytes, "correct-horse");
+    const opened = openKeyFile(path, "correct-horse");
+
+    expect(opened.equals(keyBytes)).toBe(true);
+  });
+});
+
+test("openKeyFile with wrong password throws an opaque error naming the path, not the key bytes", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "jump_ed25519.pem");
+    const keyBytes = Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\nsupersecretmaterial\n-----END OPENSSH PRIVATE KEY-----\n");
+    sealKeyFile(path, keyBytes, "correct-horse");
+
+    let thrown: unknown;
+    try {
+      openKeyFile(path, "wrong-password");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain("wrong password or corrupted file");
+    expect(message).toContain(path);
+    expect(message).not.toContain("supersecretmaterial");
+  });
+});
+
+test("sealKeyFile leaves the file readable as an encrypted payload, not plaintext key material", () => {
+  withScratchDir((dir) => {
+    const path = join(dir, "jump_rsa.pem");
+    const keyBytes = Buffer.from("-----BEGIN OPENSSH PRIVATE KEY-----\ntopsecretbits\n-----END OPENSSH PRIVATE KEY-----\n");
+
+    sealKeyFile(path, keyBytes, "correct-horse");
+    const raw = readFileSync(path);
+
+    expect(raw.includes("topsecretbits")).toBe(false);
+    expect(raw[0]).toBe(1);
   });
 });
 
