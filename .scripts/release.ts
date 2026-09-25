@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSyn
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { archiveName, binaryName } from "../src/release-assets";
 
 const STAGING_DIR = join("dist", "staging");
 const DIST_DIR = "dist";
@@ -104,13 +105,13 @@ for (const file of filesToBundle) {
 const version = gitTag.startsWith("v") ? gitTag.slice(1) : gitTag;
 
 const targets = [
-  { binary: "mssh-linux-64-bit", archive: `mssh_${version}_linux_64-bit.zip`, binName: "mssh" },
-  { binary: "mssh-linux-arm64", archive: `mssh_${version}_linux_arm-64-bit.zip`, binName: "mssh" },
-  { binary: "mssh-macos-64-bit", archive: `mssh_${version}_macos_64-bit.zip`, binName: "mssh" },
-  { binary: "mssh-macos-arm64", archive: `mssh_${version}_macos_arm-64-bit.zip`, binName: "mssh" },
-  { binary: "mssh-windows-64-bit.exe", archive: `mssh_${version}_windows_64-bit.zip`, binName: "mssh.exe" },
-  { binary: "mssh-windows-arm64.exe", archive: `mssh_${version}_windows_arm-64-bit.zip`, binName: "mssh.exe" },
-];
+  { binary: "mssh-linux-64-bit", platform: "linux", arch: "x64" },
+  { binary: "mssh-linux-arm64", platform: "linux", arch: "arm64" },
+  { binary: "mssh-macos-64-bit", platform: "darwin", arch: "x64" },
+  { binary: "mssh-macos-arm64", platform: "darwin", arch: "arm64" },
+  { binary: "mssh-windows-64-bit.exe", platform: "win32", arch: "x64" },
+  { binary: "mssh-windows-arm64.exe", platform: "win32", arch: "arm64" },
+].map((t) => ({ ...t, archive: archiveName(version, t.platform, t.arch), binName: binaryName(t.platform) }));
 
 const archivesCreated: string[] = [];
 

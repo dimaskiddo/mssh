@@ -85,6 +85,7 @@ Building from source additionally requires **[Bun](https://bun.sh/)** 1.4+.
     sudo mv mssh /usr/local/bin/mssh
     ```
     On Windows, place `mssh.exe` somewhere on your `PATH`.
+3.  For later upgrades, run `mssh update` instead of repeating these steps by hand.
 
 ### 🔐 Verifying Releases
 
@@ -140,6 +141,13 @@ To build all six platform targets: `bun run build:all`.
 ### 🔑 Password
 *   **`mssh change-password`**: Re-encrypts the existing config under a new password. Always prompts for the current password (ignoring `MSSH_PASSWORD`), then the new one twice. Refuses to write if the new password matches the current one. Warns if a stored `MSSH_PASSWORD` is now stale — mssh does not rewrite that file for you.
 
+### ⬆️ Updating
+*   **`mssh update`**: Downloads the latest release for your OS/architecture, verifies it against the release's `checksum.txt`, and replaces the running binary in place. Never downgrades — if you're already on the latest version (or newer), it says so and does nothing. Running it is the only confirmation asked; there's no extra prompt.
+    ```sh
+    sudo mssh update   # if mssh is installed somewhere only root can write to
+    ```
+    Works only on a compiled release binary, not `bun index.ts` from source. Needs no `~/.mssh`, password, or ssh — it's dispatched before any of that.
+
 ### ℹ️ Help & Version
 *   **`mssh version`** / **`mssh --version`**: Prints the product name, version, and author.
 *   **`mssh --help`** / **`-h`**: Prints usage.
@@ -183,6 +191,7 @@ Recognized settings (in either `config.yaml` or `.env`):
 - **The encrypted format's version byte is unauthenticated.** The on-disk layout is `version‖salt‖iv‖tag‖ciphertext`, but only the ciphertext is covered by the AEAD tag — the version byte itself is not bound in as associated data. Tampering with it today just changes which error path a corrupted file takes; it becomes a real concern only if a second format version is ever introduced, at which point the version byte must be authenticated (e.g. via `setAAD`) to prevent a downgrade attack.
 - **Sealing a pulled key in place doesn't securely erase the plaintext it replaced.** The write is an atomic rename over the original file, not a wipe — on an SSD or a copy-on-write filesystem, the old plaintext blocks can persist and be recoverable until reclaimed by the device or filesystem itself.
 - **Downgrading to an older mssh version breaks `IdentityFile`.** An older build has no concept of a sealed key and hands ssh the ciphertext as-is, which ssh rejects as a malformed key. Re-run `mssh config add`'s key pull, or restore the key manually, after a downgrade.
+- **`mssh update`'s checksum check doesn't verify who published the release.** It confirms the downloaded archive matches the checksum published in the *same* GitHub release, catching corruption or a truncated download — not a compromised GitHub account or a malicious release pushed under it. Trust for that path rests on TLS to GitHub plus the security of the `dimaskiddo` account, the same as manually downloading a release yourself.
 
 ---
 

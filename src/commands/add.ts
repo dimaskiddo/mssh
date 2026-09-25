@@ -33,7 +33,7 @@ import { fatal } from "../exit";
 
 // Names index.ts dispatches on before reaching runConnect — a host with one
 // of these would be silently unreachable via `mssh <name>`.
-const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-password", "-h", "--help", "--version"]);
+const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-password", "update", "-h", "--help", "--version"]);
 
 // A hung remote in listRemoteKeys/downloadRemoteKey would otherwise block in
 // this sync syscall indefinitely — spawnSync itself doesn't process signals

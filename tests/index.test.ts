@@ -165,3 +165,20 @@ test("a config path that is a directory is rejected before any password prompt",
   expect(result.stderr).toContain("is not a file (it may be a directory)");
   expect(result.stdout).not.toContain("Password");
 });
+
+test("update with a trailing argument is rejected", () => {
+  const result = runCli(["update", "extra"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Unexpected argument(s): extra");
+});
+
+// Proves update is dispatched before loadSettings/migrateLegacyConfig/sweepTempFiles
+// touch ~/.mssh at all — under `bun index.ts`, Bun.main is never the compiled
+// virtual path, so this must fail the same way regardless of HOME's contents.
+test("update under `bun index.ts` fails with the not-compiled message, never touching ~/.mssh", () => {
+  const result = runCli(["update"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("mssh update only works on a compiled release binary");
+});

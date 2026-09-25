@@ -94,6 +94,10 @@ test("validateNewAlias rejects a reserved name", () => {
   expect(validateNewAlias("setup", [])).toBe('"setup" is reserved by mssh itself and would be unreachable.');
 });
 
+test("validateNewAlias rejects \"update\" as reserved", () => {
+  expect(validateNewAlias("update", [])).toBe('"update" is reserved by mssh itself and would be unreachable.');
+});
+
 test("validateNewAlias rejects a duplicate of an existing host's name", () => {
   const existing: Host[] = [{ names: ["web1"], extras: [] }];
   expect(validateNewAlias("web1", existing)).toBe('Host "web1" already exists.');

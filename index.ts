@@ -9,6 +9,7 @@ import { runDelete } from "./src/commands/delete";
 import { runMigrateKeys } from "./src/commands/migrate-keys";
 import { runConnect } from "./src/commands/connect";
 import { runChangePassword } from "./src/commands/change-password";
+import { runUpdate } from "./src/commands/update";
 import {
   configPath,
   defaultEncConfigPath,
@@ -20,7 +21,8 @@ import {
   toDisplayPath,
   type Settings,
 } from "./src/app-config";
-import { sweepOrphanedTempFiles } from "./src/sweep";
+import { sweepOrphanedTempFiles, sweepBinaryLeftovers, isCompiledBinary } from "./src/sweep";
+import { realpathSync } from "node:fs";
 import { fatal } from "./src/exit";
 import { dirname } from "node:path";
 import pkg from "./package.json";
@@ -37,6 +39,7 @@ Usage:
   mssh config delete [name]               delete a host
   mssh config migrate-keys                encrypt any pulled key still left plaintext
   mssh <host> [ssh flags...]            connect to a host
+  mssh update                           update mssh to the latest release
   mssh version, --version               show the version
   mssh --help, -h                       show this help`;
 
@@ -71,6 +74,13 @@ function warnInvalidSort(invalid: string | undefined): void {
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
 
+  // Best-effort, independent of any command: a previous `update` on POSIX
+  // leaves a hard-link backup a running process can't remove, and on
+  // Windows can't touch the locked .exe at all — cleaned up here instead.
+  if (isCompiledBinary(Bun.main)) {
+    sweepBinaryLeftovers(dirname(realpathSync(process.execPath)));
+  }
+
   if (cmd === "--help" || cmd === "-h") {
     rejectExtraArgs(rest);
     console.log(USAGE);
@@ -81,6 +91,13 @@ async function main(): Promise<void> {
     rejectExtraArgs(rest);
     console.log(`${pkg.displayName} v${pkg.version}`);
     console.log(`By ${pkg.author}`);
+    return;
+  }
+
+  // Network-only, like version: no ~/.mssh access, no password, no ssh.
+  if (cmd === "update") {
+    rejectExtraArgs(rest);
+    await runUpdate();
     return;
   }
 

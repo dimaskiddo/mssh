@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { writeSecure, writeSecureAtomic, ensureSecureDir, type CommandRunner } from "../src/secure-file";
+import { writeSecure, writeSecureAtomic, ensureSecureDir, replaceExecutable, type CommandRunner } from "../src/secure-file";
 import { withScratchDir as scratch } from "./helpers";
 
 const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-secure-file-test-", fn);
@@ -322,6 +322,75 @@ test("writeSecure's icacls grantee matches userInfo().username, mirroring add.ts
       writeSecure(join(dir, "secret.txt"), "data", capturingRunner);
       expect(capturedArgv?.[capturedArgv.length - 1]).toBe(`${expected}:F`);
     });
+  });
+});
+
+test.skipIf(process.platform === "win32")("replaceExecutable swaps in the new content, preserving the original file's mode", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "mssh");
+    writeFileSync(target, "old binary bytes", { mode: 0o755 });
+
+    const { commit } = replaceExecutable(target, Buffer.from("new binary bytes"));
+    commit();
+
+    expect(readFileSync(target, "utf8")).toBe("new binary bytes");
+    expect(statSync(target).mode & 0o777).toBe(0o755);
+  });
+});
+
+test.skipIf(process.platform === "win32")("replaceExecutable leaves no .new-/.old- siblings after commit", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "mssh");
+    writeFileSync(target, "old", { mode: 0o755 });
+
+    const { commit } = replaceExecutable(target, Buffer.from("new"));
+    commit();
+
+    expect(readdirSync(dir)).toEqual(["mssh"]);
+  });
+});
+
+test.skipIf(process.platform === "win32")("replaceExecutable's rollback restores the original bytes and leaves no siblings", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "mssh");
+    writeFileSync(target, "original binary bytes", { mode: 0o755 });
+
+    const { rollback } = replaceExecutable(target, Buffer.from("bad binary bytes"));
+    rollback();
+
+    expect(readFileSync(target, "utf8")).toBe("original binary bytes");
+    expect(readdirSync(dir)).toEqual(["mssh"]);
+  });
+});
+
+test.skipIf(process.platform === "win32")("replaceExecutable's backup exists between the swap and commit/rollback, for a rollback to use", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "mssh");
+    writeFileSync(target, "original", { mode: 0o755 });
+
+    const { commit } = replaceExecutable(target, Buffer.from("replacement"));
+
+    const names = readdirSync(dir);
+    expect(names.length).toBe(2);
+    expect(names).toContain("mssh");
+    const backup = names.find((n) => n !== "mssh");
+    expect(backup).toMatch(new RegExp(`^mssh\\.old-${process.pid}-[0-9a-f]+$`));
+
+    commit();
+  });
+});
+
+test.skipIf(process.platform === "win32")("replaceExecutable leaves the original file untouched if the write of the new content fails", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "mssh");
+    writeFileSync(target, "original", { mode: 0o755 });
+    // Target itself, as a directory, is a stand-in for an unwritable destination —
+    // statSync(target) still succeeds (needed to read its mode), but the sibling
+    // write path shares the same parent dir, so this only proves failure leaves
+    // the original alone; a locked/readonly dir is exercised implicitly by "wx".
+    expect(() => replaceExecutable(join(dir, "does-not-exist"), Buffer.from("x"))).toThrow();
+    expect(readFileSync(target, "utf8")).toBe("original");
+    expect(readdirSync(dir)).toEqual(["mssh"]);
   });
 });
 

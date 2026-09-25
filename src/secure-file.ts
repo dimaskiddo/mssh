@@ -10,6 +10,7 @@ import {
   writeSync,
   closeSync,
   fsyncSync,
+  statSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { userInfo } from "node:os";
@@ -181,6 +182,85 @@ export function writeSecureAtomic(
   } finally {
     process.removeListener("exit", cleanupTmp);
   }
+}
+
+// Swaps a running executable's content in place, giving commands/update.ts a
+// rollback path if a post-swap smoke test fails. No icacls call here: unlike
+// writeSecure/ensureSecureDir, the target must keep whatever ACL/mode the
+// install already had (a shared install's permissions must not narrow to
+// the user running `mssh update`).
+export function replaceExecutable(target: string, data: Buffer): { commit: () => void; rollback: () => void } {
+  const suffix = `${process.pid}-${randomBytes(8).toString("hex")}`;
+  const tmp = `${target}.new-${suffix}`;
+  const backup = `${target}.old-${suffix}`;
+
+  const cleanupTmp = (): void => {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort; ENOENT just means it's already gone
+    }
+  };
+  process.on("exit", cleanupTmp);
+
+  try {
+    const mode = statSync(target).mode & 0o777;
+
+    const fd = openSync(tmp, "wx", mode);
+    try {
+      writeSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // openSync's mode is filtered by umask; force it to match exactly.
+    if (!isWindows()) chmodSync(tmp, mode);
+
+    if (isWindows()) {
+      // A running .exe can't be overwritten but can be renamed aside.
+      renameSync(target, backup);
+      try {
+        renameSync(tmp, target);
+      } catch (err) {
+        renameSync(backup, target);
+        throw err;
+      }
+    } else {
+      // Hard link keeps the original inode reachable under `backup` — the
+      // rename below only repoints the `target` directory entry, so a
+      // process already running the old binary is unaffected either way.
+      linkSync(target, backup);
+      renameSync(tmp, target);
+      fsyncContainingDir(target);
+    }
+  } catch (err) {
+    cleanupTmp();
+    throw err;
+  } finally {
+    process.removeListener("exit", cleanupTmp);
+  }
+
+  return {
+    // Windows: the old file may still be locked by the process that's
+    // running it, so leave it for sweep.ts to clean up on a later run.
+    commit: () => {
+      try {
+        unlinkSync(backup);
+      } catch {
+        // best-effort
+      }
+    },
+    rollback: () => {
+      if (isWindows()) {
+        try {
+          unlinkSync(target);
+        } catch {
+          // best-effort
+        }
+      }
+      renameSync(backup, target);
+    },
+  };
 }
 
 export function ensureSecureDir(path: string, runner: CommandRunner = defaultRunner): void {

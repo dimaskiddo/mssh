@@ -1,8 +1,8 @@
 import { test, expect } from "bun:test";
 import { join } from "node:path";
 import { writeFileSync, readdirSync, mkdirSync } from "node:fs";
-import { sweepOrphanedTempFiles } from "../src/sweep";
-import { isPidAlive, staleNames, cfgPid, tmpPid, keyPid, cmPid } from "../src/internal";
+import { sweepOrphanedTempFiles, sweepBinaryLeftovers, isCompiledBinary } from "../src/sweep";
+import { isPidAlive, staleNames, cfgPid, tmpPid, keyPid, cmPid, binLeftoverPid } from "../src/internal";
 import { withScratchDir as scratch } from "./helpers";
 
 const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-sweep-test-", fn);
@@ -127,5 +127,37 @@ test("sweepOrphanedTempFiles is a no-op when none of the three directories exist
     expect(() =>
       sweepOrphanedTempFiles(join(dir, "run"), join(dir, "config-dir"), join(dir, "keys-dir")),
     ).not.toThrow();
+  });
+});
+
+test("binLeftoverPid extracts the pid from replaceExecutable's .old-/.new- convention", () => {
+  expect(binLeftoverPid("mssh.old-1234-abcdef01")).toBe(1234);
+  expect(binLeftoverPid("mssh.exe.new-5678-00ff00ff")).toBe(5678);
+  expect(binLeftoverPid("mssh")).toBeUndefined();
+});
+
+test("isCompiledBinary is true for Bun's compiled-executable virtual path", () => {
+  expect(isCompiledBinary("/$bunfs/root/mssh")).toBe(true);
+});
+
+test("isCompiledBinary is false when run via `bun index.ts`", () => {
+  expect(isCompiledBinary("/home/user/mssh/index.ts")).toBe(false);
+});
+
+test("sweepBinaryLeftovers removes a dead-pid .old-* entry, keeps a live-pid one", () => {
+  withScratchDir((dir) => {
+    writeFileSync(join(dir, "mssh"), "current binary");
+    writeFileSync(join(dir, `mssh.old-${DEAD_PID}-aaaaaaaa`), "stale backup");
+    writeFileSync(join(dir, `mssh.new-${process.pid}-bbbbbbbb`), "in-flight write");
+
+    sweepBinaryLeftovers(dir);
+
+    expect(readdirSync(dir).sort()).toEqual(["mssh", `mssh.new-${process.pid}-bbbbbbbb`].sort());
+  });
+});
+
+test("sweepBinaryLeftovers is a no-op when the directory does not exist", () => {
+  withScratchDir((dir) => {
+    expect(() => sweepBinaryLeftovers(join(dir, "does-not-exist"))).not.toThrow();
   });
 });

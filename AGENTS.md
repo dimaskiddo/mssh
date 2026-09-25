@@ -28,12 +28,14 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **Store** | `src/store.ts` — bridges crypto ↔ fs. `loadRaw`/`loadHosts`/`saveHosts`, `sealKeyFile`/`openKeyFile` for pulled keys |
 | **KeyStore** | `src/key-store.ts` — lifecycle of pulled keys: `materializeKeys` decrypts to `run/key-*` for a connection's lifetime, `migratePlaintextKeys` seals any key an older mssh version left plaintext (crash-safe, idempotent, also finishes an interrupted `change-password` re-key) |
 | **AppConfig** | `src/app-config.ts` — `~/.mssh` path layout, `config.yaml`/`.env` loading, `resolvePassword` |
-| **SecureFile** | `src/secure-file.ts` — `writeSecure`/`ensureSecureDir`. POSIX `chmod` / Windows `icacls`. The **only** module that owns permission enforcement |
+| **SecureFile** | `src/secure-file.ts` — `writeSecure`/`ensureSecureDir`/`replaceExecutable`. POSIX `chmod` / Windows `icacls`. The **only** module that owns permission enforcement |
 | **SSHBinary** | `src/ssh-binary.ts` — `resolveSsh`/`requireSsh`, resolves `ssh` to an absolute path, per-OS install guidance |
 | **RemoteKeys** | `src/remote-keys.ts` — remote `~/.ssh` listing and key download, argv-array only, filename allowlist |
 | **LocalKeys** | `src/local-keys.ts` — local key discovery by filename: the Identity File prompt default from `~/.ssh`, and keys already pulled into `keysDir()`, reusing remote-keys' allowlist |
+| **ReleaseAssets** | `src/release-assets.ts` — `archiveName`/`binaryName`, the one naming table shared by `.scripts/release.ts` (builds archives) and `commands/update.ts` (downloads them) |
+| **Zip** | `src/zip.ts` — `extractZipEntry`, a minimal zip central-directory reader (stored + deflate only, no ZIP64) for pulling the binary out of a downloaded release archive |
 | **Prompt** | `src/prompt.ts` — four thin wrappers over `@inquirer/prompts` |
-| **Commands** | `src/commands/` — `setup`, `list`, `connect`, `add`, `edit`, `delete` |
+| **Commands** | `src/commands/` — `setup`, `list`, `connect`, `add`, `edit`, `delete`, `update` |
 | **Entry** | `index.ts` — argv dispatch only; prints `err.message`, never a stack |
 
 ## CLI
@@ -48,6 +50,7 @@ mssh config delete [name]           # delete a host, warns about dependents
 mssh config migrate-keys            # encrypt any pulled key still left plaintext
 mssh <host> [ssh flags...]          # connect — all flags pass through untouched
 mssh change-password                # re-encrypt the config under a new password (ALWAYS prompts for current)
+mssh update                         # replace the running binary with the latest GitHub release — no prompt, no ~/.mssh
 mssh version, --version              # print product name, version, author — no prompt, no disk write
 ```
 
@@ -62,7 +65,7 @@ mssh version, --version              # print product name, version, author — n
 - Child processes only via `spawn`/`spawnSync` with an argv array. Never `exec`, `execSync`, or `` $`…` `` on user-influenced data. Each module exposes an injectable runner seam (`CommandRunner`, `WhichFn`, `RemoteRunner`) so both branches are testable off-platform. `ssh` is always spawned by the absolute path `requireSsh()` resolves — never the bare, `PATH`-searched string `"ssh"`.
 
 ### Secure Writes
-- Every write of sensitive data goes through `secure-file.ts`. No raw `writeFileSync`/`mkdirSync`/`Bun.write` anywhere else in `src/`. On Windows, POSIX `mode` is silently ignored, so the `icacls` path must throw rather than leave an exposed file. Saves to the encrypted config (`saveHosts`) go through `writeSecureAtomic` — a same-directory temp file plus `renameSync`, so a write that dies mid-way never truncates or loses the only copy of the ciphertext.
+- Every write of sensitive data goes through `secure-file.ts`. No raw `writeFileSync`/`mkdirSync`/`Bun.write` anywhere else in `src/`. On Windows, POSIX `mode` is silently ignored, so the `icacls` path must throw rather than leave an exposed file. Saves to the encrypted config (`saveHosts`) go through `writeSecureAtomic` — a same-directory temp file plus `renameSync`, so a write that dies mid-way never truncates or loses the only copy of the ciphertext. `replaceExecutable` swaps the running `mssh` binary the same way for `commands/update.ts` — sibling temp file, `fsync`, atomic rename on POSIX / rename-aside on Windows — but preserves the original file's mode/ACL instead of `icacls`-locking it, since a shared install's permissions must not narrow to whichever user ran `mssh update`.
 
 ### Password Routing
 - `resolvePassword({forcePrompt})` is the single place the auth split lives: `true` for bare `mssh`, `config list`, and `change-password`'s current-password step; `false` everywhere else, including `config migrate-keys`. Changing this at a call site is a security regression.
@@ -73,7 +76,7 @@ mssh version, --version              # print product name, version, author — n
 - `Match` terminates the current host block on parse: `mssh` models no conditional directives, so a directive between a `Match` line and the next `Host` line must not attach to the host preceding the `Match` — it is discarded instead, which is stricter than ssh (which evaluates the condition) but is the only representable behavior in this data model.
 
 ### SSH Dependency Gating
-- `requireSsh()` before any plaintext SSH config touches disk on paths that need it (`connect` unconditionally, `setup` unconditionally, `add` only inside the opt-in key-extraction branch). **Never** on pure-local-crypto paths (`list`/`edit`/`delete`) — those must work on a machine with no ssh installed.
+- `requireSsh()` before any plaintext SSH config touches disk on paths that need it (`connect` unconditionally, `setup` unconditionally, `add` only inside the opt-in key-extraction branch). **Never** on pure-local-crypto paths (`list`/`edit`/`delete`) — those must work on a machine with no ssh installed. `update` needs none of `requireSsh()`/`~/.mssh`/password — it's a pure GitHub-to-binary download, dispatched in `index.ts` before `loadSettings()` for the same reason `version` is.
 
 ### ProxyJump / Temp-File Lifetime
 - OpenSSH re-execs itself as a child with `-F <same temp path>` for ProxyJump, and that child does not start until the connection is being established — well after `spawn()` returns. Cleanup is wired to the parent ssh `'exit'` event plus `process.on('exit')`, never to the `spawn()` call itself. `add.ts` may use `spawnSync` for its one-shot calls precisely because it blocks until the whole process tree has exited.
@@ -126,18 +129,22 @@ mssh/
 │   ├── crypto.ts              # seal/open — AES-256-GCM + scrypt
 │   ├── ssh-config.ts          # parse/serialize + pure Host mutations
 │   ├── store.ts               # loadRaw/loadHosts/saveHosts — bridges crypto + fs
-│   ├── secure-file.ts         # writeSecure/ensureSecureDir — chmod (POSIX) / icacls (Windows)
+│   ├── secure-file.ts         # writeSecure/ensureSecureDir/replaceExecutable — chmod (POSIX) / icacls (Windows)
 │   ├── ssh-binary.ts          # resolveSsh/requireSsh — resolve ssh to an absolute path, per-OS install guidance
 │   ├── prompt.ts              # Thin wrappers over @inquirer/prompts
 │   ├── remote-keys.ts         # Remote ~/.ssh listing + key download
 │   ├── local-keys.ts          # Local key discovery: Identity File default + already-pulled keysDir() keys
+│   ├── release-assets.ts      # archiveName/binaryName — naming table shared with .scripts/release.ts
+│   ├── zip.ts                 # extractZipEntry — minimal zip reader (stored + deflate, no ZIP64)
 │   └── commands/
 │       ├── setup.ts           # mssh setup
 │       ├── list.ts            # mssh / mssh config list
 │       ├── add.ts             # mssh config add
 │       ├── edit.ts            # mssh config edit
 │       ├── delete.ts          # mssh config delete
+│       ├── migrate-keys.ts    # mssh config migrate-keys
 │       ├── change-password.ts # mssh change-password — re-key the encrypted config
+│       ├── update.ts          # mssh update — self-update from the latest GitHub release
 │       └── connect.ts         # mssh <host> — ssh passthrough
 ├── tests/                     # bun:test unit tests, one file per src module
 ├── .scripts/release.ts        # GitHub release automation (build, archive, checksum, upload)
