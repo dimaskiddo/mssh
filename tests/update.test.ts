@@ -314,6 +314,128 @@ test("runUpdate rolls back when the post-swap smoke test fails", async () => {
   });
 });
 
+test("runUpdate rolls back on a substring-only version match, not just an exact match", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const archive = buildZipWithBinary("mssh", Buffer.from("new mssh binary"));
+    const archiveName_ = archiveName("0.1.6", "linux", "x64");
+    const checksum = `${createHash("sha256").update(archive).digest("hex")}  ${archiveName_}\n`;
+
+    const routes = new Map<string, () => Response>([
+      [
+        RELEASE_URL,
+        () =>
+          Response.json({
+            tag_name: "v0.1.6",
+            assets: [
+              { name: archiveName_, browser_download_url: ARCHIVE_URL },
+              { name: "checksum.txt", browser_download_url: CHECKSUM_URL },
+            ],
+          }),
+      ],
+      [ARCHIVE_URL, () => new Response(archive)],
+      [CHECKSUM_URL, () => new Response(checksum)],
+    ]);
+
+    let rolledBack = false;
+    const deps = baseDeps(dir, {
+      fetchFn: fakeFetch(routes),
+      // "v0.1.60" is a substring-match for "v0.1.6" but not the same version.
+      verify: () => ({ ok: true, stdout: "MSSH v0.1.60\n" }),
+      replace: () => ({
+        commit: () => {
+          throw new Error("commit should not run on a bad version match");
+        },
+        rollback: () => {
+          rolledBack = true;
+        },
+      }),
+    });
+
+    await expect(runUpdate(deps)).rejects.toThrow(/smoke test/);
+    expect(rolledBack).toBe(true);
+  });
+});
+
+test("runUpdate reports both failures when rollback itself throws after a failed smoke test", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const archive = buildZipWithBinary("mssh", Buffer.from("new mssh binary"));
+    const archiveName_ = archiveName("0.1.6", "linux", "x64");
+    const checksum = `${createHash("sha256").update(archive).digest("hex")}  ${archiveName_}\n`;
+
+    const routes = new Map<string, () => Response>([
+      [
+        RELEASE_URL,
+        () =>
+          Response.json({
+            tag_name: "v0.1.6",
+            assets: [
+              { name: archiveName_, browser_download_url: ARCHIVE_URL },
+              { name: "checksum.txt", browser_download_url: CHECKSUM_URL },
+            ],
+          }),
+      ],
+      [ARCHIVE_URL, () => new Response(archive)],
+      [CHECKSUM_URL, () => new Response(checksum)],
+    ]);
+
+    const deps = baseDeps(dir, {
+      fetchFn: fakeFetch(routes),
+      verify: () => ({ ok: false, stdout: "" }),
+      replace: () => ({
+        commit: () => {},
+        rollback: () => {
+          throw new Error("disk full");
+        },
+      }),
+    });
+
+    let caught: Error | undefined;
+    try {
+      await runUpdate(deps);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toMatch(/smoke test/);
+    expect(caught?.message).toMatch(/disk full/);
+  });
+});
+
+test("runUpdate rejects a non-https download URL before ever fetching it", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const archiveName_ = archiveName("0.1.6", "linux", "x64");
+    const insecureUrl = "http://example.invalid/archive.zip";
+    let archiveFetched = false;
+
+    const routes = new Map<string, () => Response>([
+      [
+        RELEASE_URL,
+        () =>
+          Response.json({
+            tag_name: "v0.1.6",
+            assets: [
+              { name: archiveName_, browser_download_url: insecureUrl },
+              { name: "checksum.txt", browser_download_url: CHECKSUM_URL },
+            ],
+          }),
+      ],
+      [insecureUrl, () => ((archiveFetched = true), new Response(""))],
+      [CHECKSUM_URL, () => new Response("")],
+    ]);
+
+    const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
+    await expect(runUpdate(deps)).rejects.toThrow(/https/);
+    expect(archiveFetched).toBe(false);
+  });
+});
+
+test("runUpdate fails clearly when tag_name is present but not a string", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const routes = new Map<string, () => Response>([[RELEASE_URL, () => Response.json({ tag_name: 7, assets: [] })]]);
+    const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
+    await expect(runUpdate(deps)).rejects.toThrow(/missing tag_name/);
+  });
+});
+
 test("binaryName is used to pick the archive entry", () => {
   expect(binaryName("linux")).toBe("mssh");
   expect(binaryName("win32")).toBe("mssh.exe");

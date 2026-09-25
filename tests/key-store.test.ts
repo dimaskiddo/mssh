@@ -138,6 +138,23 @@ test("migratePlaintextKeys discards an interrupted .pem.next that does not open 
   });
 });
 
+test("migratePlaintextKeys does not delete a committed .pem.next when the rename fails", () => {
+  withScratchDir((dir) => {
+    const keysDir = join(dir, "keys");
+    ensureSecureDir(keysDir);
+    const path = join(keysDir, "jump_ed25519.pem");
+    // A directory in place of the rename target makes renameSync fail
+    // (EISDIR) even though openKeyFile already proved the new password committed.
+    mkdirSync(path);
+    sealKeyFile(`${path}.next`, KEY_BYTES, "new-password");
+
+    expect(() => migratePlaintextKeys(keysDir, "new-password")).toThrow();
+
+    expect(existsSync(`${path}.next`)).toBe(true);
+    expect(openKeyFile(`${path}.next`, "new-password").equals(KEY_BYTES)).toBe(true);
+  });
+});
+
 test("materializeKeys decrypts a managed key to runDir and rewrites IdentityFile to point at it", () => {
   withScratchDir((dir) => {
     const keysDir = join(dir, "keys");

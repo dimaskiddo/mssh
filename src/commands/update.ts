@@ -84,11 +84,12 @@ function defaultDeps(): UpdateDeps {
 }
 
 async function fetchBuffer(fetchFn: typeof fetch, url: string, timeoutMs: number, maxBytes: number): Promise<Buffer> {
+  if (!url.startsWith("https://")) throw new Error(`refusing a non-https download URL: ${url}`);
   const res = await fetchFn(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`download failed for ${url} (HTTP ${res.status})`);
-  // res.url is "" for a constructed Response (as in tests) — only a real
-  // fetch's final URL is meaningful here, so an empty one is not a redirect to flag.
-  if (res.url !== "" && !res.url.startsWith("https:")) throw new Error(`refusing a non-https redirect for ${url}`);
+  // res.url is "" for a constructed Response (as in tests) — falls back to the
+  // request url, which is already validated above, so there is no bypass.
+  if (!(res.url || url).startsWith("https:")) throw new Error(`refusing a non-https redirect for ${url}`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.byteLength > maxBytes) throw new Error(`download for ${url} exceeded the ${maxBytes}-byte limit`);
   return buf;
@@ -105,7 +106,9 @@ export async function runUpdate(deps: UpdateDeps = defaultDeps()): Promise<void>
   });
   if (!res.ok) throw new Error(`could not query the latest release (HTTP ${res.status})`);
   const release = (await res.json()) as ReleaseResponse;
-  if (!release.tag_name) throw new Error("update: release response is missing tag_name");
+  if (!release.tag_name || typeof release.tag_name !== "string") {
+    throw new Error("update: release response is missing tag_name");
+  }
 
   if (!isNewer(release.tag_name, deps.currentVersion)) {
     console.log(`mssh v${deps.currentVersion} is already up to date.`);
@@ -145,8 +148,17 @@ export async function runUpdate(deps: UpdateDeps = defaultDeps()): Promise<void>
   }
 
   const smoke = deps.verify(target);
-  if (!smoke.ok || !smoke.stdout.includes(`v${version}`)) {
-    swap.rollback();
+  // Exact line match, not includes(): "v0.1.1" is a substring of "v0.1.10".
+  const smokeOk = smoke.ok && smoke.stdout.split(/\r?\n/).some((line) => line.endsWith(` v${version}`));
+  if (!smokeOk) {
+    try {
+      swap.rollback();
+    } catch (rollbackErr) {
+      const rollbackMsg = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+      throw new Error(
+        `update produced a binary that failed its smoke test, and restoring ${target} failed: ${rollbackMsg}`,
+      );
+    }
     throw new Error(`update produced a binary that failed its smoke test; reverted ${target}`);
   }
   swap.commit();

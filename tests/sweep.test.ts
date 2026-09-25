@@ -150,13 +150,24 @@ test("sweepBinaryLeftovers removes a dead-pid .old-* entry, keeps a live-pid one
     writeFileSync(join(dir, `mssh.old-${DEAD_PID}-aaaaaaaa`), "stale backup");
     writeFileSync(join(dir, `mssh.new-${process.pid}-bbbbbbbb`), "in-flight write");
 
-    sweepBinaryLeftovers(dir);
+    sweepBinaryLeftovers(join(dir, "mssh"));
 
     expect(readdirSync(dir).sort()).toEqual(["mssh", `mssh.new-${process.pid}-bbbbbbbb`].sort());
   });
 });
 
-test("sweepBinaryLeftovers is a no-op when the directory does not exist", () => {
+test("sweepBinaryLeftovers never touches a leftover from another program in the same directory", () => {
+  withScratchDir((dir) => {
+    writeFileSync(join(dir, "mssh"), "current binary");
+    writeFileSync(join(dir, `other-tool.old-${DEAD_PID}-aaaaaaaa`), "unrelated leftover");
+
+    sweepBinaryLeftovers(join(dir, "mssh"));
+
+    expect(readdirSync(dir).sort()).toEqual(["mssh", `other-tool.old-${DEAD_PID}-aaaaaaaa`].sort());
+  });
+});
+
+test("sweepBinaryLeftovers is a no-op when the exec path does not resolve", () => {
   withScratchDir((dir) => {
     expect(() => sweepBinaryLeftovers(join(dir, "does-not-exist"))).not.toThrow();
   });

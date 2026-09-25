@@ -2,7 +2,14 @@ import { test, expect } from "bun:test";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { writeSecure, writeSecureAtomic, ensureSecureDir, replaceExecutable, type CommandRunner } from "../src/secure-file";
+import {
+  writeSecure,
+  writeSecureAtomic,
+  ensureSecureDir,
+  replaceExecutable,
+  ownershipToRestore,
+  type CommandRunner,
+} from "../src/secure-file";
 import { withScratchDir as scratch } from "./helpers";
 
 const withScratchDir = (fn: (dir: string) => void): void => scratch("mssh-secure-file-test-", fn);
@@ -392,6 +399,18 @@ test.skipIf(process.platform === "win32")("replaceExecutable leaves the original
     expect(readFileSync(target, "utf8")).toBe("original");
     expect(readdirSync(dir)).toEqual(["mssh"]);
   });
+});
+
+test("ownershipToRestore: root replacing a file owned by another user restores that user's uid/gid", () => {
+  expect(ownershipToRestore({ uid: 1000, gid: 1000 }, 0)).toEqual({ uid: 1000, gid: 1000 });
+});
+
+test("ownershipToRestore: root replacing a file it already owns needs no restore", () => {
+  expect(ownershipToRestore({ uid: 0, gid: 0 }, 0)).toBeUndefined();
+});
+
+test("ownershipToRestore: a non-root caller never restores ownership", () => {
+  expect(ownershipToRestore({ uid: 1000, gid: 1000 }, 1000)).toBeUndefined();
 });
 
 test("neither writeSecure's nor ensureSecureDir's icacls grant is read-only (:R)", () => {

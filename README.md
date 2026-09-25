@@ -170,7 +170,7 @@ Recognized settings (in either `config.yaml` or `.env`):
 |---|---|
 | `MSSH_CONFIG_PATH` | Override the encrypted config location |
 | `DEFAULT_SSH_KEY_PATH` | Default identity file offered when adding a new host. When unset, `mssh` offers a key found in your `~/.ssh` (preferring `id_rsa`). |
-| `MSSH_PASSWORD` | Master password. Used by `setup`/`add`/`edit`/`delete`/connect. **Never** used by `mssh` or `mssh config list` — those always prompt, by design. |
+| `MSSH_PASSWORD` | Master password. Used by `add`/`edit`/`delete`/`config migrate-keys`/connect. **Never** used by `mssh`, `mssh config list`, `setup`, or `change-password`'s current-password prompt — those always prompt, by design. |
 
 ---
 

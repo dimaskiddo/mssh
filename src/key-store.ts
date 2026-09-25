@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, renameSync, unlinkSync } from "n
 import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { expandHome } from "./app-config";
-import { openKeyFile, sealKeyFile } from "./store";
+import { openKeyFile, sealKeyFile, DecryptError } from "./store";
 import { isSealedPayload } from "./crypto";
 import { isValidKeyFilename } from "./remote-keys";
 import { writeSecure } from "./secure-file";
@@ -76,10 +76,15 @@ export function migratePlaintextKeys(keysDir: string, password: string): { migra
     const target = nextPath.slice(0, -".next".length);
     try {
       openKeyFile(nextPath, password); // proves the config re-key committed under `password`
-      renameSync(nextPath, target);
-    } catch {
-      unlinkSync(nextPath); // re-key never committed; discard the orphaned attempt
+    } catch (err) {
+      if (!(err instanceof DecryptError)) throw err;
+      unlinkSync(nextPath); // re-key never committed under this password; discard the orphaned attempt
+      continue;
     }
+    // Outside the catch: a rename failure here means the key IS sealed under
+    // the committed password, so it must never be deleted — leave .next for
+    // the next run to retry instead.
+    renameSync(nextPath, target);
   }
 
   for (const name of names) {

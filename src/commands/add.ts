@@ -94,6 +94,13 @@ export function preflightArgv(tempConfigPath: string, jumpAlias: string): string
   return ["-F", tempConfigPath, "-o", "StrictHostKeyChecking=accept-new", jumpAlias, "true"];
 }
 
+// "-F none" is OpenSSH's own "read no config files" switch — without it ssh
+// falls back to parsing the user's real ~/.ssh/config for this teardown call,
+// which may carry directives (e.g. Match exec) mssh never agreed to run.
+export function controlExitArgv(controlPath: string, jumpAlias: string): string[] {
+  return ["-F", "none", "-S", controlPath, "-O", "exit", jumpAlias];
+}
+
 // Reaches the jump host directly and offers to pull a private key from its
 // ~/.ssh into keysDir(). ProxyJump authenticates with a key read LOCALLY,
 // which is why it must be fetched off the bastion first, not used from there.
@@ -137,7 +144,7 @@ async function extractJumpHostKey(jumpHost: Host, jumpAlias: string, password: s
     if (cleaned) return;
     cleaned = true;
     try {
-      spawnSync(sshPath, ["-S", controlPath, "-O", "exit", jumpAlias], { timeout: REMOTE_COMMAND_TIMEOUT_MS });
+      spawnSync(sshPath, controlExitArgv(controlPath, jumpAlias), { timeout: REMOTE_COMMAND_TIMEOUT_MS });
     } catch {
       // best-effort
     }

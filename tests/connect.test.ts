@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { tempConfigName, controlPathName, earlyPurgeUsable } from "../src/commands/connect";
-import { forwardsTermAndHup, rejectedFlags, childExitCode } from "../src/internal";
+import { forwardsTermAndHup, rejectedFlags, childExitCode, firstPositional } from "../src/internal";
 
 test("forwardsTermAndHup is true on POSIX platforms", () => {
   expect(forwardsTermAndHup("linux")).toBe(true);
@@ -137,4 +137,20 @@ test("childExitCode maps a signal death to 128 + signal number", () => {
 
 test("childExitCode falls back to 1 when neither code nor a mappable signal is present", () => {
   expect(childExitCode(null, null)).toBe(1);
+});
+
+test("firstPositional skips a flag's separate-token value", () => {
+  expect(firstPositional(["-p", "22", "web"])).toBe("web");
+});
+
+test("firstPositional skips a separate-token value through a clustered flag", () => {
+  expect(firstPositional(["-vp", "22", "x"])).toBe("x");
+});
+
+test("firstPositional treats an attached value as part of the flag, not the target", () => {
+  expect(firstPositional(["-p22", "x"])).toBe("x");
+});
+
+test("firstPositional returns undefined when the argv is only a flag and its value", () => {
+  expect(firstPositional(["-p", "22"])).toBeUndefined();
 });

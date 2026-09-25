@@ -5,8 +5,9 @@ MSSH_CONFIG_PATH: ~/.mssh/config
 # When unset, mssh offers a key found in ~/.ssh, preferring id_rsa.
 DEFAULT_SSH_KEY_PATH: ~/.ssh/id_rsa
 
-# Master password. If set, mssh uses it for connect/add/edit/delete.
-# NOTE: `mssh` (no args) and `mssh config list` ALWAYS prompt for the
-# password and ignore this value, regardless of whether it is set.
+# Master password. If set, mssh uses it for connect/add/edit/delete/config migrate-keys.
+# NOTE: `mssh` (no args), `mssh config list`, `mssh setup`, and `mssh change-password`'s
+# current-password prompt ALWAYS prompt for the password and ignore this value,
+# regardless of whether it is set.
 # If you set this, keep this file `chmod 0600` — see README.md's threat model.
 MSSH_PASSWORD:

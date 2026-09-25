@@ -22,7 +22,6 @@ import {
   type Settings,
 } from "./src/app-config";
 import { sweepOrphanedTempFiles, sweepBinaryLeftovers, isCompiledBinary } from "./src/sweep";
-import { realpathSync } from "node:fs";
 import { fatal } from "./src/exit";
 import { dirname } from "node:path";
 import pkg from "./package.json";
@@ -78,7 +77,7 @@ async function main(): Promise<void> {
   // leaves a hard-link backup a running process can't remove, and on
   // Windows can't touch the locked .exe at all — cleaned up here instead.
   if (isCompiledBinary(Bun.main)) {
-    sweepBinaryLeftovers(dirname(realpathSync(process.execPath)));
+    sweepBinaryLeftovers(process.execPath);
   }
 
   if (cmd === "--help" || cmd === "-h") {

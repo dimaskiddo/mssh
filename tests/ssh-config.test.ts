@@ -186,6 +186,22 @@ test("REFUSED_DIRECTIVES is a superset of EXECUTING_DIRECTIVES plus Include", ()
   expect(REFUSED_DIRECTIVES.has("include")).toBe(true);
 });
 
+test("serialize throws on a programmatically-built extra whose key is quoted, rather than letting it skip the deny-list unnormalized", () => {
+  const host: Host = {
+    names: ["myserver"],
+    extras: [{ key: '"ProxyCommand"', value: "id" }],
+  };
+  expect(() => serialize([host])).toThrow();
+});
+
+test("serialize throws on a programmatically-built extra whose key is not a syntactically valid ssh_config keyword", () => {
+  const host: Host = {
+    names: ["myserver"],
+    extras: [{ key: "Proxy Command", value: "id" }],
+  };
+  expect(() => serialize([host])).toThrow();
+});
+
 test("serialize throws when a Host's extras carry Include, not just an executing directive", () => {
   const host: Host = {
     names: ["myserver"],

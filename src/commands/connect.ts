@@ -111,6 +111,31 @@ function argvTargets(argv: string[], hosts: Host[]): string[] {
   return argv.filter((arg) => names.has(arg));
 }
 
+// OpenSSH's own getopt string for ssh(1) — these single-letter flags always
+// take a value, so a flag's value (e.g. "22" in `-p 22`) is never mistaken
+// for the target the "not a configured host alias" error names.
+const ARG_TAKING_FLAGS = new Set("bceilmopBDEFIJLOPQRSwW".split(""));
+
+// Best-effort positional-arg scan for an error message only — argvTargets
+// above remains the source of truth for which argv tokens are real targets.
+export function firstPositional(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    if (arg === "--") return argv[i + 1];
+    if (!arg.startsWith("-") || arg === "-") return arg;
+
+    let consumesNext = false;
+    for (let j = 1; j < arg.length; j++) {
+      if (ARG_TAKING_FLAGS.has(arg[j] as string)) {
+        consumesNext = j === arg.length - 1; // false when the value is attached (-p22)
+        break;
+      }
+    }
+    if (consumesNext) i++;
+  }
+  return undefined;
+}
+
 // Shared by runConnect and list.ts's bare-`mssh` picker, so every path that
 // writes plaintext to disk is guarded by rejectedFlags()/requireSsh() the same way.
 export function connectWithRaw(raw: string, argv: string[], password: string, spawnFn: SpawnFn = spawn, hosts?: Host[]): void {
@@ -168,7 +193,7 @@ export function connectWithRaw(raw: string, argv: string[], password: string, sp
   // A target matching no alias silently drops its ProxyJump/bastion — this
   // turns that into a loud failure. Heuristic: names the first non-flag token.
   if (targets.length === 0) {
-    const candidate = argv.find((arg) => !arg.startsWith("-"));
+    const candidate = firstPositional(argv);
     if (candidate !== undefined) {
       throw new Error(`"${candidate}" is not a configured host alias — connecting would silently drop its ProxyJump`);
     }

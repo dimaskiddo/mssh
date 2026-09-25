@@ -1,8 +1,8 @@
 // Best-effort start-of-run cleanup for files a killed mssh process leaves
 // behind. SIGKILL/OOM skip secure-file.ts's own exit-time cleanup entirely, and
 // orphans only become visible on some later run — hence start-of-run, not at-exit.
-import { existsSync, readdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, realpathSync, unlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 // process.kill(pid, 0) sends no signal, only probes: throws ESRCH if the pid
 // doesn't exist. EPERM means it exists but is owned by another user — still
@@ -109,6 +109,18 @@ export function sweepOrphanedTempFiles(runDir: string, configDir: string, keysDi
 // this runs on the next invocation instead — same deferred-cleanup shape as
 // sweepOrphanedTempFiles. Call only when isCompiledBinary(Bun.main): under
 // `bun index.ts` this directory is bun's own install, not mssh's.
-export function sweepBinaryLeftovers(binDir: string): void {
-  sweepDir(binDir, (name) => BIN_LEFTOVER_NAME.test(name), binLeftoverPid);
+//
+// Scoped to `<our own basename>.old-*`/`.new-*` only — binDir is a shared
+// location like /usr/local/bin, and matching the suffix pattern alone would
+// let this delete another program's same-shaped leftover file.
+export function sweepBinaryLeftovers(execPath: string): void {
+  let real: string;
+  try {
+    real = realpathSync(execPath);
+  } catch {
+    return; // best-effort: unresolvable path just means nothing to sweep
+  }
+
+  const prefix = `${basename(real)}.`;
+  sweepDir(dirname(real), (name) => name.startsWith(prefix) && BIN_LEFTOVER_NAME.test(name), binLeftoverPid);
 }

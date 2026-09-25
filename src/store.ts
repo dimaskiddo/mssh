@@ -11,6 +11,11 @@ import { writeSecureAtomic } from "./secure-file";
 // `mssh setup`, destroying a config they were never actually locked out of.
 const RESOURCE_ERROR_CODES = new Set(["ERR_CRYPTO_OUT_OF_MEMORY", "ERR_CRYPTO_INVALID_SCRYPT_PARAMS", "ENOMEM"]);
 
+// Distinguishes "this password/file is genuinely wrong" from every other
+// decrypt failure — key-store.ts's .pem.next recovery must only discard an
+// orphaned re-key attempt on this, never on a resource error or a bug.
+export class DecryptError extends Error {}
+
 // Shared by loadRaw (config) and openKeyFile (pulled keys) — a decrypt
 // failure never distinguishes wrong password from tampering on either path,
 // and neither message may echo internals.
@@ -26,7 +31,7 @@ function foldDecryptError(err: unknown, what: string): never {
     throw new Error(`failed to decrypt ${what}: internal error, not a wrong password (${(err as Error).message})`);
   }
 
-  throw new Error(`failed to decrypt ${what}: wrong password or corrupted file`);
+  throw new DecryptError(`failed to decrypt ${what}: wrong password or corrupted file`);
 }
 
 export function loadRaw(path: string, password: string): string {

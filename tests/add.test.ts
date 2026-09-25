@@ -7,6 +7,7 @@ import {
   buildNewHost,
   tempConfigRunner,
   preflightArgv,
+  controlExitArgv,
   defaultUsername,
   validateNewAlias,
   resolveSsh,
@@ -149,4 +150,18 @@ test("preflightArgv ends with the alias then true, so the alias is never parsed 
 test("preflightArgv emits the alias exactly once", () => {
   const argv = preflightArgv("/tmp/cfg", "bastion1");
   expect(argv.filter((a) => a === "bastion1")).toHaveLength(1);
+});
+
+test("controlExitArgv starts with -F none, so tearing down the control socket never reads the user's real ~/.ssh/config", () => {
+  const argv = controlExitArgv("/tmp/cm-abc", "bastion1");
+  expect(argv.slice(0, 2)).toEqual(["-F", "none"]);
+});
+
+test("controlExitArgv never references ~/.ssh/config", () => {
+  const argv = controlExitArgv("/tmp/cm-abc", "bastion1");
+  expect(argv.some((a) => a.includes(".ssh/config"))).toBe(false);
+});
+
+test("controlExitArgv carries the control path and alias through to -S/-O exit", () => {
+  expect(controlExitArgv("/tmp/cm-abc", "bastion1")).toEqual(["-F", "none", "-S", "/tmp/cm-abc", "-O", "exit", "bastion1"]);
 });

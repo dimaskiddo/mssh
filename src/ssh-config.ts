@@ -330,7 +330,14 @@ function assertSerializable(host: Host): void {
     if (!isValidFieldValue(extra.key) || !isValidFieldValue(extra.value)) {
       throw new Error(`invalid value for ${extra.key} on host "${hostLabel(host)}"`);
     }
-    const lowerExtraKey = extra.key.toLowerCase();
+    // Same normalization parse() applies before its own deny-list check —
+    // an unnormalized extra.key.toLowerCase() would let a quoted or
+    // otherwise malformed key dodge REFUSED_DIRECTIVES undetected.
+    const normalizedExtraKey = normalizeDirectiveKey(extra.key);
+    if (normalizedExtraKey === undefined) {
+      throw new Error(`invalid directive name ${JSON.stringify(extra.key)} on host "${hostLabel(host)}"`);
+    }
+    const lowerExtraKey = normalizedExtraKey.toLowerCase();
     if (REFUSED_DIRECTIVES.has(lowerExtraKey) && !isPermitLocalCommandNo(lowerExtraKey, decodeValue(extra.value))) {
       throw new Error(
         `refusing to write ${extra.key} on host "${hostLabel(host)}": it would make ssh execute a program or load an untracked file`,

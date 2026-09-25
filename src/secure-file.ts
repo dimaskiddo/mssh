@@ -2,6 +2,7 @@
 // write of sensitive data (config, temp files, downloaded keys) must go through.
 import {
   chmodSync,
+  chownSync,
   mkdirSync,
   renameSync,
   linkSync,
@@ -184,6 +185,16 @@ export function writeSecureAtomic(
   }
 }
 
+// `sudo mssh update` runs as root but must not leave a user-owned install
+// root-owned. Pure so it's testable without actually running as root.
+export function ownershipToRestore(
+  stat: { uid: number; gid: number },
+  euid: number,
+): { uid: number; gid: number } | undefined {
+  if (euid !== 0 || stat.uid === euid) return undefined;
+  return { uid: stat.uid, gid: stat.gid };
+}
+
 // Swaps a running executable's content in place, giving commands/update.ts a
 // rollback path if a post-swap smoke test fails. No icacls call here: unlike
 // writeSecure/ensureSecureDir, the target must keep whatever ACL/mode the
@@ -204,7 +215,8 @@ export function replaceExecutable(target: string, data: Buffer): { commit: () =>
   process.on("exit", cleanupTmp);
 
   try {
-    const mode = statSync(target).mode & 0o777;
+    const stat = statSync(target);
+    const mode = stat.mode & 0o777;
 
     const fd = openSync(tmp, "wx", mode);
     try {
@@ -213,8 +225,13 @@ export function replaceExecutable(target: string, data: Buffer): { commit: () =>
     } finally {
       closeSync(fd);
     }
-    // openSync's mode is filtered by umask; force it to match exactly.
-    if (!isWindows()) chmodSync(tmp, mode);
+    if (!isWindows()) {
+      // chown before chmod: chown can clear the setuid/setgid bits chmod just set.
+      const restore = ownershipToRestore(stat, process.geteuid?.() ?? -1);
+      if (restore) chownSync(tmp, restore.uid, restore.gid);
+      // openSync's mode is filtered by umask; force it to match exactly.
+      chmodSync(tmp, mode);
+    }
 
     if (isWindows()) {
       // A running .exe can't be overwritten but can be renamed aside.
