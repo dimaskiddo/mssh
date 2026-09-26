@@ -1,12 +1,13 @@
 import { test, expect } from "bun:test";
 import { userInfo } from "node:os";
 import { join } from "node:path";
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
 import {
   writeSecure,
   writeSecureAtomic,
   ensureSecureDir,
   replaceExecutable,
+  installExecutable,
   ownershipToRestore,
   type CommandRunner,
 } from "../src/secure-file";
@@ -411,6 +412,39 @@ test("ownershipToRestore: root replacing a file it already owns needs no restore
 
 test("ownershipToRestore: a non-root caller never restores ownership", () => {
   expect(ownershipToRestore({ uid: 1000, gid: 1000 }, 1000)).toBeUndefined();
+});
+
+test.skipIf(process.platform === "win32")("installExecutable creates a new file, including missing parent dirs, at mode 0755", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "nested", "bin", "mssh");
+    installExecutable(target, Buffer.from("binary bytes"));
+    expect(readFileSync(target, "utf8")).toBe("binary bytes");
+    expect(statSync(target).mode & 0o777).toBe(0o755);
+  });
+});
+
+test.skipIf(process.platform === "win32")("installExecutable replaces an existing target via replaceExecutable, keeping its mode", () => {
+  withScratchDir((dir) => {
+    const target = join(dir, "mssh");
+    writeFileSync(target, "old binary bytes", { mode: 0o700 });
+    installExecutable(target, Buffer.from("new binary bytes"));
+    expect(readFileSync(target, "utf8")).toBe("new binary bytes");
+    expect(statSync(target).mode & 0o777).toBe(0o700);
+  });
+});
+
+test.skipIf(process.platform === "win32")("installExecutable leaves no .new-/.old- siblings behind, new or existing target", () => {
+  withScratchDir((dir) => {
+    const freshTarget = join(dir, "fresh", "mssh");
+    installExecutable(freshTarget, Buffer.from("a"));
+    expect(readdirSync(join(dir, "fresh"))).toEqual(["mssh"]);
+
+    const existingTarget = join(dir, "existing", "mssh");
+    mkdirSync(join(dir, "existing"));
+    writeFileSync(existingTarget, "old", { mode: 0o755 });
+    installExecutable(existingTarget, Buffer.from("b"));
+    expect(readdirSync(join(dir, "existing"))).toEqual(["mssh"]);
+  });
 });
 
 test("neither writeSecure's nor ensureSecureDir's icacls grant is read-only (:R)", () => {

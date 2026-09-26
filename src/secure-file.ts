@@ -3,6 +3,7 @@
 import {
   chmodSync,
   chownSync,
+  existsSync,
   mkdirSync,
   renameSync,
   linkSync,
@@ -278,6 +279,48 @@ export function replaceExecutable(target: string, data: Buffer): { commit: () =>
       renameSync(backup, target);
     },
   };
+}
+
+// Installs mssh itself onto PATH for `mssh setup`. Unlike replaceExecutable's
+// target (already installed, keeps whoever's ACL/mode it has), a fresh
+// install has no prior owner to preserve — a bin dir like ~/.local/bin is
+// not secret, so this uses a plain mkdirSync, not ensureSecureDir's 0700.
+export function installExecutable(target: string, data: Buffer): void {
+  if (existsSync(target)) {
+    replaceExecutable(target, data).commit();
+    return;
+  }
+
+  mkdirSync(dirname(target), { recursive: true });
+
+  const tmp = `${target}.new-${process.pid}-${randomBytes(8).toString("hex")}`;
+  const cleanupTmp = (): void => {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort; ENOENT just means it's already gone
+    }
+  };
+  process.on("exit", cleanupTmp);
+
+  try {
+    const fd = openSync(tmp, "wx", 0o755);
+    try {
+      writeSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    if (!isWindows()) chmodSync(tmp, 0o755); // openSync's mode is filtered by umask
+
+    renameSync(tmp, target);
+    fsyncContainingDir(target);
+  } catch (err) {
+    cleanupTmp();
+    throw err;
+  } finally {
+    process.removeListener("exit", cleanupTmp);
+  }
 }
 
 export function ensureSecureDir(path: string, runner: CommandRunner = defaultRunner): void {

@@ -85,6 +85,8 @@ Building from source additionally requires **[Bun](https://bun.sh/)** 1.4+.
     sudo mv mssh /usr/local/bin/mssh
     ```
     On Windows, place `mssh.exe` somewhere on your `PATH`.
+
+    Alternatively, run `mssh setup` (or `./mssh setup`) once — it creates your encrypted config and offers to install itself onto `PATH` for you.
 3.  For later upgrades, run `mssh update` instead of repeating these steps by hand.
 
 ### 🔐 Verifying Releases
@@ -112,7 +114,7 @@ To build all six platform targets: `bun run build:all`.
 ## 🕹️ Usage & Commands
 
 ### 🔧 Setup
-*   **`mssh setup`**: Creates the initial empty encrypted config. Refuses to overwrite an existing one, and confirms the password twice since a typo would make the config permanently unopenable.
+*   **`mssh setup`**: Creates the initial empty encrypted config. Refuses to overwrite an existing one, and confirms the password twice since a typo would make the config permanently unopenable. When run from a compiled binary, it then offers to install itself to a per-user directory (`~/.local/bin/mssh` on Linux/macOS, `%LOCALAPPDATA%\Programs\mssh\mssh.exe` on Windows) so plain `mssh` works without `sudo` or copying it yourself. If that directory isn't already on your `PATH`, it prints the exact line to add. Running `mssh setup` again against an existing config leaves the config untouched and re-offers the install (or offers to replace an already-installed copy).
 
 ### 📋 Listing
 *   **`mssh`** / **`mssh config list`**: Lists configured hosts. Always prompts for the password, ignoring `MSSH_PASSWORD`, so a stray env var can't silently expose your host list.

@@ -30,7 +30,7 @@ const USAGE = `MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper
 
 Usage:
   mssh [--sort=asc|dsc|cfg]             pick a host from the list and connect
-  mssh setup                            create the encrypted config
+  mssh setup                            create the encrypted config and install mssh to PATH
   mssh change-password                  re-encrypt the config under a new password
   mssh config list [--sort=asc|dsc|cfg]   list host aliases
   mssh config add                         add a host
