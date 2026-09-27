@@ -118,10 +118,15 @@ To build all six platform targets: `bun run build:all`.
 
 ### 📋 Listing
 *   **`mssh`** / **`mssh config list`**: Lists configured hosts. Always prompts for the password — the `MSSH_PASSWORD` unattended-connect exception (see "Password" below) does not apply here, so a stray env var can't silently expose your host list.
-*   **`--sort=asc|dsc|cfg`**: Controls the listing order for both forms above. `asc` (default) sorts ascending, `dsc` sorts descending, `cfg` prints hosts in config-file order (no sorting). Sorting is case-sensitive ASCII order. An unrecognized value warns and falls back to `asc`.
+*   **`--sort=asc|dsc|cfg|tags`**: Controls the listing order for both forms above. `asc` (default) sorts ascending, `dsc` sorts descending, `cfg` prints hosts in config-file order (no sorting). Sorting is case-sensitive ASCII order. An unrecognized value warns and falls back to `asc`.
     ```sh
     mssh config list --sort=dsc   # descending
     mssh --sort=cfg               # picker in config-file order
+    ```
+*   **`--sort=tags`**: Groups the listing under a header per tag instead of a flat list — tag headers A→Z, host names A→Z within each, uppercased for display (`[STAGE]`). A host with several tags appears in every one of its groups. Untagged hosts get a final `[Others]` group (its mixed case keeps it distinct from a tag literally named `others`, which prints as `[OTHERS]`). Combine with `--tags=` to filter first and group only by the given tags — no `[Others]` group appears in that case.
+    ```sh
+    mssh config list --sort=tags                    # every tag as a group, untagged last
+    mssh config list --sort=tags --tags=alibaba      # only the [ALIBABA] group
     ```
 *   **`--tags=a,b`**: Filters the listing to hosts carrying **every** given tag (comma-separated, case-insensitive; repeat the flag to combine). If no host matches, prints `No hosts match tag(s): ...` and exits without a picker.
     ```sh

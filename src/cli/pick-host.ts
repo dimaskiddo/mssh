@@ -23,6 +23,25 @@ export function hostChoices(hosts: Host[], order: SortOrder = "cfg"): Array<{ na
   return sortNames(connectableNames(hosts), order).map((name) => ({ name, value: name }));
 }
 
+// Mixed case is deliberate: a tag literally named "others" always renders
+// [OTHERS] (tags are lowercase-only), so it can never collide with this label.
+export const UNTAGGED_LABEL = "[Others]";
+
+export function tagGroups(hosts: Host[], filterTags: string[]): Array<{ label: string; names: string[] }> {
+  const tags = filterTags.length > 0 ? [...new Set(filterTags)].sort() : [...new Set(hosts.flatMap((h) => h.tags ?? []))].sort();
+
+  const groups = tags.map((tag) => ({
+    label: `[${tag.toUpperCase()}]`,
+    names: sortNames(connectableNames(hosts.filter((h) => h.tags?.includes(tag))), "asc"),
+  }));
+
+  if (filterTags.length === 0) {
+    groups.push({ label: UNTAGGED_LABEL, names: sortNames(connectableNames(hosts.filter((h) => !h.tags || h.tags.length === 0)), "asc") });
+  }
+
+  return groups.filter((g) => g.names.length > 0);
+}
+
 export async function pickHost(hosts: Host[]): Promise<{ host: Host; pattern: string } | undefined> {
   if (hosts.length === 0) {
     console.log(NO_HOSTS_MESSAGE);

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseSortFlag, parseTagsFlag } from "../../src/commands/list";
+import { parseSortFlag, parseTagsFlag, groupSelectItems } from "../../src/commands/list";
 
 test("parseSortFlag with no args defaults to ascending with nothing left over", () => {
   expect(parseSortFlag([])).toEqual({ order: "asc", rest: [], invalid: undefined });
@@ -7,6 +7,10 @@ test("parseSortFlag with no args defaults to ascending with nothing left over", 
 
 test("parseSortFlag reads a valid --sort= value and leaves an empty rest", () => {
   expect(parseSortFlag(["--sort=dsc"])).toEqual({ order: "dsc", rest: [], invalid: undefined });
+});
+
+test("parseSortFlag accepts --sort=tags as a valid order", () => {
+  expect(parseSortFlag(["--sort=tags"])).toEqual({ order: "tags", rest: [], invalid: undefined });
 });
 
 test("parseSortFlag falls back to ascending and reports the value when it is not asc/dsc/cfg", () => {
@@ -57,4 +61,38 @@ test("parseTagsFlag and parseSortFlag compose, each ignoring the other's flag", 
   const { rest, invalid } = parseSortFlag(["--tags=a", "--sort=dsc"]);
   expect(invalid).toBeUndefined();
   expect(parseTagsFlag(rest)).toEqual({ tags: ["a"], rest: [] });
+});
+
+test("--sort=tags composes with --tags=, each parser ignoring the other's flag", () => {
+  const { order, rest, invalid } = parseSortFlag(["--tags=a", "--sort=tags"]);
+  expect(order).toBe("tags");
+  expect(invalid).toBeUndefined();
+  expect(parseTagsFlag(rest)).toEqual({ tags: ["a"], rest: [] });
+});
+
+test("groupSelectItems maps each group to a header separator followed by its choices", () => {
+  const items = groupSelectItems([{ label: "[A]", names: ["web1", "web2"] }]);
+  expect(items).toEqual([
+    { separator: "[A]" },
+    { name: "web1", value: "web1" },
+    { name: "web2", value: "web2" },
+  ]);
+});
+
+test("groupSelectItems inserts one blank separator between groups, never leading or trailing", () => {
+  const items = groupSelectItems([
+    { label: "[A]", names: ["web1"] },
+    { label: "[B]", names: ["web2"] },
+  ]);
+  expect(items).toEqual([
+    { separator: "[A]" },
+    { name: "web1", value: "web1" },
+    { separator: " " },
+    { separator: "[B]" },
+    { name: "web2", value: "web2" },
+  ]);
+});
+
+test("groupSelectItems returns an empty array for no groups", () => {
+  expect(groupSelectItems([])).toEqual([]);
 });

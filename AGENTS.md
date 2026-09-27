@@ -43,16 +43,16 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **TempNames / Sweep** | `src/fs/temp-names.ts` — the `run/` filename producers (`tempConfigName`, `controlPathName`, `keyTempName`), the in-place suffix producers (`tmpSuffix`, `newSuffix`, `oldSuffix`) used by `secure-write.ts`/`executable.ts`, and their PID regexes. `src/fs/sweep.ts` — orphaned temp-file and stale-binary sweeping |
 | **ReleaseAssets / Zip** | `src/release/release-assets.ts` — `archiveName`/`binaryName`, plus `CHECKSUM_FILENAME`/`checksumLine`/`checksumFor`/`stripV`, the checksum-format naming table shared by `.scripts/release.ts` (builds archives) and `commands/update.ts` (downloads them). `src/release/zip.ts` — `extractZipEntry`, a minimal zip central-directory reader (stored + deflate only, no ZIP64) |
 | **Install** | `src/release/install.ts` — `setup`'s offer to install the running binary onto PATH |
-| **Prompt / FieldLabels / PickHost** | `src/cli/prompt.ts` — four thin wrappers over `@inquirer/prompts`. `src/cli/field-labels.ts` — prompt label text. `src/cli/pick-host.ts` — `resolveTarget` (the name-or-pick block shared by `edit`/`delete`), and `hostChoices`/`sortNames`/`NO_HOSTS_MESSAGE`, shared by `list`/`add`/`edit` |
+| **Prompt / FieldLabels / PickHost** | `src/cli/prompt.ts` — four thin wrappers over `@inquirer/prompts`; `promptSelect` takes `SelectItem<T>[]` so a caller can mix in `{separator}` header rows via `toSelectChoices`. `src/cli/field-labels.ts` — prompt label text. `src/cli/pick-host.ts` — `resolveTarget` (the name-or-pick block shared by `edit`/`delete`), `hostChoices`/`sortNames`/`NO_HOSTS_MESSAGE`, shared by `list`/`add`/`edit`, and `tagGroups`/`UNTAGGED_LABEL` for `list`'s `--sort=tags` grouping |
 | **Commands** | `src/commands/` — `setup`, `list`, `connect`, `add`, `edit`, `delete`, `migrate-keys`, `change-password`, `update` |
 | **Entry** | `index.ts` — argv dispatch only; prints `err.message`, never a stack |
 
 ## CLI
 
 ```
-mssh [--tags=a,b]                   # list hosts
+mssh [--sort=asc|dsc|cfg|tags] [--tags=a,b]                   # list hosts
 mssh setup                          # create the encrypted config
-mssh config list [--tags=a,b]       # list hosts
+mssh config list [--sort=asc|dsc|cfg|tags] [--tags=a,b]       # list hosts
 mssh config add                     # add a host, optional ProxyJump, optional remote key fetch
 mssh config edit [name]             # edit one modeled field
 mssh config delete [name]           # delete a host, warns about dependents

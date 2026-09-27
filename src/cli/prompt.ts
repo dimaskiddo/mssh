@@ -1,4 +1,4 @@
-import { input, password, select, confirm } from "@inquirer/prompts";
+import { input, password, select, confirm, Separator } from "@inquirer/prompts";
 
 // Without stdin as a TTY (cron, systemd, `mssh host < /dev/null`), @inquirer
 // prompts don't error — they wait invisibly until the launcher times out.
@@ -36,10 +36,16 @@ export function promptPassword(message: string, opts?: { validate?: Validator })
   return runPrompt(() => password({ message, mask: true, validate: opts?.validate }));
 }
 
+export type SelectItem<T> = { name: string; value: T } | { separator: string };
+
+export function toSelectChoices<T>(items: SelectItem<T>[]): Array<{ name: string; value: T } | Separator> {
+  return items.map((item) => ("separator" in item ? new Separator(item.separator) : item));
+}
+
 // loop: false — @inquirer defaults to wrapping, which on a long host list
 // silently moves the cursor to the opposite end of a list the user is scanning.
-export function promptSelect<T>(message: string, choices: Array<{ name: string; value: T }>): Promise<T> {
-  return runPrompt(() => select({ message, choices, loop: false }));
+export function promptSelect<T>(message: string, choices: SelectItem<T>[]): Promise<T> {
+  return runPrompt(() => select({ message, choices: toSelectChoices(choices), loop: false }));
 }
 
 export function promptConfirm(message: string, opts?: { default?: boolean }): Promise<boolean> {

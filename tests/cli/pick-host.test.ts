@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveTarget, hostChoices, sortNames } from "../../src/cli/pick-host";
+import { resolveTarget, hostChoices, sortNames, tagGroups, UNTAGGED_LABEL } from "../../src/cli/pick-host";
 import type { Host } from "../../src/ssh/host";
 
 const hosts: Host[] = [
@@ -91,4 +91,58 @@ test("sortNames returns an empty array for all three orders given no names", () 
   expect(sortNames([], "asc")).toEqual([]);
   expect(sortNames([], "dsc")).toEqual([]);
   expect(sortNames([], "cfg")).toEqual([]);
+});
+
+test("tagGroups with no filter groups by every tag found, sorted, with untagged hosts last", () => {
+  const hosts: Host[] = [
+    host({ names: ["web2"], tags: ["alibaba"] }),
+    host({ names: ["db1"], tags: ["stage"] }),
+    host({ names: ["web1"], tags: ["stage", "alibaba"] }),
+    host({ names: ["bastion"] }),
+  ];
+  expect(tagGroups(hosts, [])).toEqual([
+    { label: "[ALIBABA]", names: ["web1", "web2"] },
+    { label: "[STAGE]", names: ["db1", "web1"] },
+    { label: UNTAGGED_LABEL, names: ["bastion"] },
+  ]);
+});
+
+test("tagGroups puts a multi-tagged host in every one of its groups", () => {
+  const hosts: Host[] = [host({ names: ["web1"], tags: ["a", "b"] })];
+  expect(tagGroups(hosts, [])).toEqual([
+    { label: "[A]", names: ["web1"] },
+    { label: "[B]", names: ["web1"] },
+  ]);
+});
+
+test("tagGroups with a filter groups only by the given tags, not every tag on the matches", () => {
+  const hosts: Host[] = [host({ names: ["web1"], tags: ["alibaba", "stage"] })];
+  expect(tagGroups(hosts, ["alibaba"])).toEqual([{ label: "[ALIBABA]", names: ["web1"] }]);
+});
+
+test("tagGroups with a filter never adds an [Others] group", () => {
+  const hosts: Host[] = [host({ names: ["web1"], tags: ["alibaba"] }), host({ names: ["bastion"] })];
+  expect(tagGroups(hosts, ["alibaba"])).toEqual([{ label: "[ALIBABA]", names: ["web1"] }]);
+});
+
+test("tagGroups drops a group with no names, including a glob-only tagged host", () => {
+  const hosts: Host[] = [host({ names: ["*"], tags: ["alibaba"] })];
+  expect(tagGroups(hosts, [])).toEqual([]);
+});
+
+test("tagGroups omits [Others] when every host is tagged", () => {
+  const hosts: Host[] = [host({ names: ["web1"], tags: ["a"] })];
+  expect(tagGroups(hosts, [])).toEqual([{ label: "[A]", names: ["web1"] }]);
+});
+
+test("tagGroups uppercases tag labels but keeps [Others] distinct from a tag literally named others", () => {
+  const hosts: Host[] = [host({ names: ["web1"], tags: ["others"] }), host({ names: ["bastion"] })];
+  expect(tagGroups(hosts, [])).toEqual([
+    { label: "[OTHERS]", names: ["web1"] },
+    { label: UNTAGGED_LABEL, names: ["bastion"] },
+  ]);
+});
+
+test("tagGroups returns an empty array for no hosts", () => {
+  expect(tagGroups([], [])).toEqual([]);
 });

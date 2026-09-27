@@ -107,6 +107,7 @@ const NO_CONFIG_CASES: Array<[string, string[]]> = [
   ["config list", ["config", "list"]],
   ["bare mssh", []],
   ["bare mssh with --sort", ["--sort=dsc"]],
+  ["bare mssh with --sort=tags", ["--sort=tags"]],
   ["config add", ["config", "add"]],
   ["config edit", ["config", "edit"]],
   ["config delete", ["config", "delete"]],
@@ -117,6 +118,7 @@ const NO_CONFIG_CASES: Array<[string, string[]]> = [
   ["bare mssh with singular --tag (not recognized)", ["--tag=x"]],
   ["config list with --tags", ["config", "list", "--tags=x"]],
   ["host with --tags reaches connect", ["somehost", "--tags=x"]],
+  ["config list with --sort=tags --tags", ["config", "list", "--sort=tags", "--tags=x"]],
 ];
 
 for (const [label, args] of NO_CONFIG_CASES) {
@@ -134,6 +136,14 @@ test("config list with an unknown --sort= value warns and still reaches the no-c
   expect(result.signal).toBeNull();
   expect(result.status).toBe(1);
   expect(result.stderr).toContain('unknown --sort value "bogus"');
+  expect(result.stderr).toContain("Run 'mssh setup'");
+});
+
+test("config list with --sort=tags warns of no unknown --sort value", () => {
+  const result = runCli(["config", "list", "--sort=tags"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).not.toContain("unknown --sort value");
   expect(result.stderr).toContain("Run 'mssh setup'");
 });
 

@@ -20,10 +20,10 @@ import pkg from "./package.json";
 const USAGE = `MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper
 
 Usage:
-  mssh [--sort=asc|dsc|cfg] [--tags=a,b]  pick a host from the list and connect
+  mssh [--sort=asc|dsc|cfg|tags] [--tags=a,b]  pick a host from the list and connect
   mssh setup                            create the encrypted config and install mssh to PATH
   mssh change-password                  re-encrypt the config under a new password
-  mssh config list [--sort=asc|dsc|cfg] [--tags=a,b]  list host aliases
+  mssh config list [--sort=asc|dsc|cfg|tags] [--tags=a,b]  list host aliases
   mssh config add                         add a host
   mssh config edit [name]                 edit one modeled field on a host
   mssh config delete [name]               delete a host
@@ -58,7 +58,7 @@ function rejectExtraArgs(extra: string[]): void {
 // intended listing, and failing would hide it behind a usage error.
 function warnInvalidSort(invalid: string | undefined): void {
   if (invalid === undefined) return;
-  console.error(`Warning: unknown --sort value "${invalid}"; expected asc, dsc, or cfg. Listing ascending.`);
+  console.error(`Warning: unknown --sort value "${invalid}"; expected asc, dsc, cfg, or tags. Listing ascending.`);
 }
 
 async function main(): Promise<void> {

@@ -77,3 +77,39 @@ test("runList with a --tags filter matching nothing prints the no-match message 
     logSpy.mockRestore();
   }
 });
+
+test("runList('tags', []) prints group headers and names, blank between groups, Others last", async () => {
+  writeFileSync(configFilePath, seal(tagText, TEST_PASSWORD));
+  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await runList("tags", []);
+    expect(logSpy.mock.calls.flat()).toEqual(["[STAGE]", "web1", "", "[Others]", "web2"]);
+  } finally {
+    logSpy.mockRestore();
+  }
+});
+
+test("runList('tags', ['stage']) prints only the matching group", async () => {
+  writeFileSync(configFilePath, seal(tagText, TEST_PASSWORD));
+  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await runList("tags", ["stage"]);
+    expect(logSpy.mock.calls.flat()).toEqual(["[STAGE]", "web1"]);
+  } finally {
+    logSpy.mockRestore();
+  }
+});
+
+test("runList('tags', ['nope']) gives the no-match stderr message and no stdout", async () => {
+  writeFileSync(configFilePath, seal(tagText, TEST_PASSWORD));
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await runList("tags", ["nope"]);
+    expect(errorSpy).toHaveBeenCalledWith("No hosts match tag(s): nope.");
+    expect(logSpy).not.toHaveBeenCalled();
+  } finally {
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  }
+});

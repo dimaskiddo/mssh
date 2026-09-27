@@ -5,16 +5,18 @@ import { loadRaw } from "../core/store";
 import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
 import { parse } from "../ssh/ssh-config";
 import { connectableNames, duplicateAlias, filterByTags, splitTags } from "../ssh/host";
-import { promptSelect } from "../cli/prompt";
+import { promptSelect, type SelectItem } from "../cli/prompt";
 import { connectWithRaw, type SpawnFn } from "../ssh/session";
 import { fieldPrompt, CONNECT_TO_LABEL } from "../cli/field-labels";
 import { openConfig } from "../core/require-config";
-import { hostChoices, sortNames, NO_HOSTS_MESSAGE, type SortOrder } from "../cli/pick-host";
+import { hostChoices, sortNames, tagGroups, NO_HOSTS_MESSAGE, type SortOrder } from "../cli/pick-host";
 
-const SORT_ORDERS = new Set<string>(["asc", "dsc", "cfg"]);
+export type ListOrder = SortOrder | "tags";
 
-export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[]; invalid?: string } {
-  let order: SortOrder = "asc";
+const SORT_ORDERS = new Set<string>(["asc", "dsc", "cfg", "tags"]);
+
+export function parseSortFlag(argv: string[]): { order: ListOrder; rest: string[]; invalid?: string } {
+  let order: ListOrder = "asc";
   let invalid: string | undefined;
   const rest: string[] = [];
 
@@ -25,7 +27,7 @@ export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[
     }
     const value = arg.slice("--sort=".length);
     if (SORT_ORDERS.has(value)) {
-      order = value as SortOrder;
+      order = value as ListOrder;
       invalid = undefined;
     } else {
       order = "asc";
@@ -34,6 +36,15 @@ export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[
   }
 
   return { order, rest, invalid };
+}
+
+// One blank separator between groups, none leading/trailing — mirrors runList's console.log("").
+export function groupSelectItems(groups: Array<{ label: string; names: string[] }>): SelectItem<string>[] {
+  return groups.flatMap((group, i) => [
+    ...(i > 0 ? [{ separator: " " }] : []),
+    { separator: group.label },
+    ...group.names.map((name) => ({ name, value: name })),
+  ]);
 }
 
 // Every --tags= occurrence accumulates (AND-combined), unlike --sort's
@@ -57,7 +68,7 @@ function noMatchMessage(tags: string[]): string {
   return `No hosts match tag(s): ${tags.join(", ")}.`;
 }
 
-export async function runList(order: SortOrder = "asc", tags: string[] = []): Promise<void> {
+export async function runList(order: ListOrder = "asc", tags: string[] = []): Promise<void> {
   const { path, password } = await openConfig();
 
   const hosts = parse(loadRaw(path, password));
@@ -82,13 +93,22 @@ export async function runList(order: SortOrder = "asc", tags: string[] = []): Pr
     return;
   }
 
+  if (order === "tags") {
+    tagGroups(filtered, tags).forEach((group, i) => {
+      if (i > 0) console.log("");
+      console.log(group.label);
+      group.names.forEach((name) => console.log(name));
+    });
+    return;
+  }
+
   for (const name of sortNames(connectableNames(filtered), order)) {
     console.log(name);
   }
 }
 
 // Bare `mssh`: the one password prompt drives both list and connect — no second decrypt.
-export async function runListConnect(order: SortOrder = "asc", tags: string[] = [], spawnFn?: SpawnFn): Promise<void> {
+export async function runListConnect(order: ListOrder = "asc", tags: string[] = [], spawnFn?: SpawnFn): Promise<void> {
   const { path, password } = await openConfig();
 
   const raw = loadRaw(path, password);
@@ -106,6 +126,7 @@ export async function runListConnect(order: SortOrder = "asc", tags: string[] = 
     return;
   }
 
-  const selected = await promptSelect<string>(fieldPrompt(CONNECT_TO_LABEL), hostChoices(filtered, order));
+  const choices = order === "tags" ? groupSelectItems(tagGroups(filtered, tags)) : hostChoices(filtered, order);
+  const selected = await promptSelect<string>(fieldPrompt(CONNECT_TO_LABEL), choices);
   connectWithRaw(raw, [selected], password, spawnFn, hosts);
 }
