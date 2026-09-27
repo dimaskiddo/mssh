@@ -167,6 +167,61 @@ test("a config path that is a directory is rejected before any password prompt",
   expect(result.stdout).not.toContain("Password");
 });
 
+test("a config.yaml with a stored MSSH_PASSWORD is ignored, warned about without leaking the value", () => {
+  const home = emptyHome();
+  const msshDir = join(home, ".mssh");
+  mkdirSync(msshDir);
+  writeFileSync(join(msshDir, "config.yaml"), "MSSH_PASSWORD: hunter2\n");
+
+  const result = runCli(["config", "list"], { HOME: home });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("MSSH_PASSWORD");
+  expect(result.stderr).toContain("is ignored");
+  expect(result.stderr).not.toContain("hunter2");
+  expect(result.stdout).not.toContain("hunter2");
+});
+
+test("MSSH_PASSWORD set only in the environment (no settings file) triggers no ignored-file warning", () => {
+  const result = runCli(["config", "list"], { HOME: emptyHome(), MSSH_PASSWORD: "x" });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("Run 'mssh setup'");
+  expect(result.stderr).not.toContain("is ignored");
+});
+
+// A real subprocess, not a mock.module unit test: resolvePassword is exercised
+// through every command test file via mock.module, which patches one shared,
+// permanent module-registry object — no in-process capture of "the real
+// function" is safe once any other file has mocked it. A subprocess has its
+// own registry, so this is the only reliable way to prove the actual
+// short-circuit (no TTY prompt attempted) versus the actual prompt attempt.
+function scratchConfigHome(): string {
+  const home = emptyHome();
+  const msshDir = join(home, ".mssh");
+  mkdirSync(msshDir);
+  writeFileSync(join(msshDir, "config"), "x".repeat(64));
+  return home;
+}
+
+test("a direct connect with MSSH_PASSWORD set never prompts, even though the config can't actually decrypt it", () => {
+  const result = runCli(["somehost"], { HOME: scratchConfigHome(), MSSH_PASSWORD: "pw" });
+  expect(result.signal).toBeNull();
+  expect(result.stderr).not.toContain("no terminal available");
+});
+
+test("a direct connect with no MSSH_PASSWORD set still prompts (would hang without requireTTY's guard)", () => {
+  const result = runCli(["somehost"], { HOME: scratchConfigHome() });
+  expect(result.signal).toBeNull();
+  expect(result.stderr).toContain("no terminal available");
+});
+
+test("config list with MSSH_PASSWORD set still prompts — the carve-out is for direct connect only", () => {
+  const result = runCli(["config", "list"], { HOME: scratchConfigHome(), MSSH_PASSWORD: "pw" });
+  expect(result.signal).toBeNull();
+  expect(result.stderr).toContain("no terminal available");
+});
+
 test("update with a trailing argument is rejected", () => {
   const result = runCli(["update", "extra"], { HOME: emptyHome() });
   expect(result.signal).toBeNull();

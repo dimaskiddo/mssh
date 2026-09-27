@@ -1,19 +1,14 @@
-import { statSync } from "node:fs";
-import { dirname } from "node:path";
 import { promptPassword } from "../cli/prompt";
 import { fieldPrompt, PASSWORD_LABEL, PASSWORD_SET_LABEL, PASSWORD_CONFIRM_LABEL } from "../cli/field-labels";
-import { isWindows } from "../core/platform";
 import { fatal } from "../core/exit";
-import { toDisplayPath } from "./paths";
-import type { Settings, LoadedSettings } from "./settings";
 
 export function passwordsMatch(a: string, b: string): boolean {
   return a === b;
 }
 
-// seal/open round-trips fine on "" and pickSettings discards an empty
+// seal/open round-trips fine on "" and takeEnvPassword discards an empty
 // MSSH_PASSWORD, so Enter-Enter would create a config keyed on "" that can
-// never be reopened via a stored password. Existing empty-password configs still open.
+// never be reopened via the env var. Existing empty-password configs still open.
 export function isValidPassword(password: string): boolean {
   return password.length > 0;
 }
@@ -31,42 +26,19 @@ export async function promptNewPassword(): Promise<string> {
   return first;
 }
 
-export function selectStoredPassword(settings: Settings, forcePrompt: boolean): string | undefined {
-  if (forcePrompt) return undefined;
-  return settings.MSSH_PASSWORD;
+// Reads MSSH_PASSWORD from the given env and always deletes it — ssh (and its
+// ProxyJump re-exec child) inherits process.env, so leaving it there would
+// hand it to every spawned child, and to the remote server via SendEnv.
+export function takeEnvPassword(env: NodeJS.ProcessEnv): string | undefined {
+  const value = env.MSSH_PASSWORD;
+  delete env.MSSH_PASSWORD;
+  return value === undefined || value === "" ? undefined : value;
 }
 
-// group/other bits only — 0400 is stricter than 0600 and must not warn, so
-// this checks what's readable/writable to others, not equality to 0600.
-function warnIfWorldOrGroupAccessible(path: string, minimumMode: string): void {
-  try {
-    const mode = statSync(path).mode & 0o777;
-    if (mode & 0o077) {
-      console.error(`Warning: ${toDisplayPath(path)} is accessible by others (mode ${mode.toString(8)}; should be ${minimumMode} or stricter)`);
-    }
-  } catch {
-    // advisory only; a stat failure here is not this function's problem
-  }
-}
-
-function warnIfNotPrivate(sourcePath: string): void {
-  if (isWindows()) return; // POSIX mode bits are meaningless on Windows
-
-  warnIfWorldOrGroupAccessible(sourcePath, "0600");
-  warnIfWorldOrGroupAccessible(dirname(sourcePath), "0700");
-}
-
-// Takes the caller's own loadSettings() result rather than reloading — a
-// second independent read could disagree if config.yaml was edited between
-// the two calls.
-export async function resolvePassword(loaded: LoadedSettings, opts: { forcePrompt: boolean }): Promise<string> {
-  const { settings, sourcePath } = loaded;
-  const stored = selectStoredPassword(settings, opts.forcePrompt);
-
-  if (stored !== undefined) {
-    if (sourcePath) warnIfNotPrivate(sourcePath);
-    return stored;
-  }
-
+// Only runConnect ever passes envPassword — every other command calls this
+// with no argument, so it always prompts. That structural split is what
+// replaces the old forcePrompt flag.
+export async function resolvePassword(envPassword?: string): Promise<string> {
+  if (envPassword !== undefined) return envPassword;
   return promptPassword(fieldPrompt(PASSWORD_LABEL));
 }

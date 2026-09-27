@@ -55,7 +55,7 @@ async function promptNewValue(hosts: Host[], target: Host, field: ModeledField):
 }
 
 export async function runEdit(name?: string): Promise<void> {
-  const { path, password } = await openConfig({ forcePrompt: false });
+  const { path, password } = await openConfig();
 
   const hosts = loadHosts(path, password);
   reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);

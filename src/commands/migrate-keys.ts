@@ -6,7 +6,7 @@ import { migratePlaintextKeys } from "../keyring/key-store";
 import { openConfig } from "../core/require-config";
 
 export async function runMigrateKeys(): Promise<void> {
-  const { path, password } = await openConfig({ forcePrompt: false });
+  const { path, password } = await openConfig();
 
   loadRaw(path, password); // verifies the password before it's used to seal keys
 

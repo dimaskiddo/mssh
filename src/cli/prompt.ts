@@ -5,7 +5,7 @@ import { input, password, select, confirm } from "@inquirer/prompts";
 // Checked per call, not at module load, so it reflects stdin at prompt time.
 function requireTTY(): void {
   if (!process.stdin.isTTY) {
-    throw new Error("no terminal available; set MSSH_PASSWORD in ~/.mssh/config.yaml");
+    throw new Error("no terminal available; for unattended `mssh <host>`, set MSSH_PASSWORD in the environment");
   }
 }
 

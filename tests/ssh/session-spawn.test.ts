@@ -42,7 +42,7 @@ const homedirSpy = spyOn(nodeOs, "homedir").mockReturnValue(scratchHomeDir);
 // above, would leak into other files' real static imports.
 mock.module("../../src/config/settings", () => ({
   ...realSettings,
-  loadSettings: () => ({ settings: { MSSH_CONFIG_PATH: configFilePath }, sourcePath: undefined }),
+  loadSettings: () => ({ settings: { MSSH_CONFIG_PATH: configFilePath }, sourcePath: undefined, storedPassword: false }),
 }));
 
 mock.module("../../src/config/password", () => ({
@@ -326,7 +326,7 @@ test("runConnect still decrypts and delegates to connectWithRaw end to end", asy
   const exitSpy = spyOn(process, "exit").mockImplementation(() => undefined as never);
   try {
     const fake = new FakeChild();
-    await runConnect(["web1"], fakeSpawn(fake));
+    await runConnect(["web1"], undefined, fakeSpawn(fake));
 
     expect(tempFilesIn(scratchRunDir).length).toBe(1);
 

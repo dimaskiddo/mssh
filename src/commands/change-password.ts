@@ -58,17 +58,14 @@ export function changePassword(path: string, currentPassword: string, newPasswor
   reseal(path, loadRaw(path, currentPassword), currentPassword, newPassword, keysDir);
 }
 
-export async function runChangePassword(): Promise<void> {
-  const loaded = loadSettings();
-  const { settings, sourcePath } = loaded;
+export async function runChangePassword(envPasswordSet: boolean = false): Promise<void> {
+  const { settings } = loadSettings();
   const path = configPath(settings);
   requireExistingConfig(path);
 
   console.error(`Re-keying ${path}.`);
 
-  // forcePrompt: true — a stored MSSH_PASSWORD must not let someone at your
-  // terminal re-key your config without entering it.
-  const current = await resolvePassword(loaded, { forcePrompt: true });
+  const current = await resolvePassword();
 
   // Verify current before collecting the new password twice, or a wrong
   // current password only surfaces after two more prompts. A decrypt failure
@@ -87,10 +84,7 @@ export async function runChangePassword(): Promise<void> {
 
   console.log(`Config re-keyed at ${path}.`);
 
-  if (sourcePath && settings.MSSH_PASSWORD !== undefined) {
-    console.error(
-      `Warning: MSSH_PASSWORD in ${toDisplayPath(sourcePath)} is now stale. Update or remove it, ` +
-        `or every command that uses it will fail to decrypt.`,
-    );
+  if (envPasswordSet) {
+    console.error("Warning: MSSH_PASSWORD in your environment is now stale; update it or unattended connects will fail to decrypt.");
   }
 }

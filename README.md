@@ -8,7 +8,7 @@
 
 *   **🔒 Encrypted at Rest:** AES-256-GCM with a fresh salt and IV per save, keyed through a deliberately slow, memory-hard KDF at OWASP's minimum recommended cost. Your SSH config is never plaintext on disk.
 *   **🎭 Drop-in Passthrough:** `mssh myserver -L 8080:localhost:80` forwards flags straight to `ssh` — no wrapper-specific syntax to learn. `-F` and any `-o` option that makes ssh execute a program are rejected since they'd bypass the managed config.
-*   **🔑 Always-Prompt Listing:** `mssh` and `mssh config list` always ask for the password, even if `MSSH_PASSWORD` is stored in `config.yaml`/`.env`, so a stray setting can't silently dump your host inventory.
+*   **🔑 Vault-Mode Password:** every command prompts for the password. The one exception is a direct `mssh <host> [ssh flags...]`, which may take it from the `MSSH_PASSWORD` environment variable — for cron, systemd, and other unattended jobs. It is never read from a settings file; if one is found there, mssh warns and ignores it.
 *   **🦘 ProxyJump-Aware:** Jump hosts resolve correctly even though OpenSSH re-executes itself as a child process to handle them.
 *   **📥 Remote Key Extraction:** `mssh config add` can reach a new host directly and pull a private key from its `~/.ssh` into your local key store.
 *   **🧹 Zero-Trace Sessions:** Decrypted data lives only for the life of the connection, locked to your user account, and is destroyed when the session ends.
@@ -117,7 +117,7 @@ To build all six platform targets: `bun run build:all`.
 *   **`mssh setup`**: Creates the initial empty encrypted config. Refuses to overwrite an existing one, and confirms the password twice since a typo would make the config permanently unopenable. When run from a compiled binary, it then offers to install itself to a per-user directory (`~/.local/bin/mssh` on Linux/macOS, `%LOCALAPPDATA%\Programs\mssh\mssh.exe` on Windows) so plain `mssh` works without `sudo` or copying it yourself. If that directory isn't already on your `PATH`, it prints the exact line to add. Running `mssh setup` again against an existing config leaves the config untouched and re-offers the install (or offers to replace an already-installed copy).
 
 ### 📋 Listing
-*   **`mssh`** / **`mssh config list`**: Lists configured hosts. Always prompts for the password, ignoring `MSSH_PASSWORD`, so a stray env var can't silently expose your host list.
+*   **`mssh`** / **`mssh config list`**: Lists configured hosts. Always prompts for the password — the `MSSH_PASSWORD` unattended-connect exception (see "Password" below) does not apply here, so a stray env var can't silently expose your host list.
 *   **`--sort=asc|dsc|cfg`**: Controls the listing order for both forms above. `asc` (default) sorts ascending, `dsc` sorts descending, `cfg` prints hosts in config-file order (no sorting). Sorting is case-sensitive ASCII order. An unrecognized value warns and falls back to `asc`.
     ```sh
     mssh config list --sort=dsc   # descending
@@ -140,8 +140,25 @@ To build all six platform targets: `bun run build:all`.
     ```
     Every saved host carries `ServerAliveInterval 60` to keep idle connections from being dropped by a NAT or firewall timeout; a value you set yourself on a host is left as-is.
 
+    This is the **only** command that honors `MSSH_PASSWORD` — see "Unattended use" below. It is read from the process environment only, never a settings file, and mssh deletes it from its own environment before spawning `ssh` so no child process, and no remote `SendEnv`, ever sees it.
+
 ### 🔑 Password
-*   **`mssh change-password`**: Re-encrypts the existing config under a new password. Always prompts for the current password (ignoring `MSSH_PASSWORD`), then the new one twice. Refuses to write if the new password matches the current one. Warns if a stored `MSSH_PASSWORD` is now stale — mssh does not rewrite that file for you.
+*   **`mssh change-password`**: Re-encrypts the existing config under a new password. Always prompts for the current password, then the new one twice — the `MSSH_PASSWORD` unattended-connect exception never applies here. Refuses to write if the new password matches the current one. Warns if `MSSH_PASSWORD` is set in your environment, since it's now stale for future unattended connects.
+
+### 🤖 Unattended Use
+For a cron job or a long-running tunnel, export `MSSH_PASSWORD` for that one job only — never in a shell you also use interactively, and never committed anywhere:
+
+```sh
+# cron
+MSSH_PASSWORD=hunter2 mssh bastion -N -L 8080:localhost:80
+
+# systemd — EnvironmentFile takes KEY=value, one per line
+# /etc/mssh-tunnel.env, chmod 0600, owned by the service's user
+EnvironmentFile=/etc/mssh-tunnel.env
+ExecStart=/usr/local/bin/mssh bastion -N -L 8080:localhost:80
+```
+
+See "Does not protect against" in the Threat Model for what this exception does and doesn't cover.
 
 ### ⬆️ Updating
 *   **`mssh update`**: Downloads the latest release for your OS/architecture, verifies it against the release's `checksum.txt`, and replaces the running binary in place. Never downgrades — if you're already on the latest version (or newer), it says so and does nothing. Running it is the only confirmation asked; there's no extra prompt.
@@ -172,7 +189,8 @@ Recognized settings (in either `config.yaml` or `.env`):
 |---|---|
 | `MSSH_CONFIG_PATH` | Override the encrypted config location |
 | `DEFAULT_SSH_KEY_PATH` | Default identity file offered when adding a new host. When unset, `mssh` offers a key found in your `~/.ssh` (preferring `id_rsa`). |
-| `MSSH_PASSWORD` | Master password. Used by `add`/`edit`/`delete`/`config migrate-keys`/connect. **Never** used by `mssh`, `mssh config list`, `setup`, or `change-password`'s current-password prompt — those always prompt, by design. |
+
+The master password is never a setting — it's always prompted for, except that a direct `mssh <host>` connect may take it from `MSSH_PASSWORD` in the process environment (see "Unattended Use" above). A `MSSH_PASSWORD` found in `config.yaml` or `.env` is ignored, with a warning, since it would mean a plaintext password sitting on disk.
 
 ---
 
@@ -181,7 +199,9 @@ Recognized settings (in either `config.yaml` or `.env`):
 ### Protects against
 
 - Backup, cloud-sync, or accidental git commit of your SSH config — on disk it is always ciphertext.
-- Casual shoulder-surfing of your host inventory — listing hosts (`mssh`, `mssh config list`) always requires the password, even if one is stored in `MSSH_PASSWORD`.
+- Casual shoulder-surfing of your host inventory — listing hosts (`mssh`, `mssh config list`) always requires the password; the `MSSH_PASSWORD` unattended-connect exception applies only to a direct `mssh <host>`.
+- A stray `MSSH_PASSWORD` sitting in `config.yaml`/`.env` from an older mssh version — it's no longer read from there; mssh warns and ignores it instead.
+- The `MSSH_PASSWORD` you export for an unattended connect leaking to `ssh` or the remote host — mssh deletes it from its own environment before spawning anything, and before ssh could pass it along via `SendEnv`.
 - Other local users reading the decrypted config mid-session — the run directory and the decrypted temp file are both restricted to your user account. On POSIX, that plaintext is also deleted as soon as ssh finishes authenticating, not only when the session ends, shrinking the window it exists in to seconds. On Windows it persists for the whole session, since Windows' `ssh.exe` has no way to signal that moment.
 - A private key pulled from a jump host during `mssh config add` — it's sealed under the master password at rest in `~/.mssh/keys`, the same as the config, and decrypted to the restricted run directory only for the lifetime of a connection. A key pulled by an older mssh version is upgraded to sealed automatically the next time any command decrypts your config.
 - Offline brute-force of a stolen `config` or a stolen key under `~/.mssh/keys` — key derivation is deliberately slow and memory-hard, making guessing attempts costly.
@@ -193,6 +213,8 @@ Recognized settings (in either `config.yaml` or `.env`):
 - **The encrypted format's version byte is unauthenticated.** The on-disk layout is `version‖salt‖iv‖tag‖ciphertext`, but only the ciphertext is covered by the AEAD tag — the version byte itself is not bound in as associated data. Tampering with it today just changes which error path a corrupted file takes; it becomes a real concern only if a second format version is ever introduced, at which point the version byte must be authenticated (e.g. via `setAAD`) to prevent a downgrade attack.
 - **Sealing a pulled key in place doesn't securely erase the plaintext it replaced.** The write is an atomic rename over the original file, not a wipe — on an SSD or a copy-on-write filesystem, the old plaintext blocks can persist and be recoverable until reclaimed by the device or filesystem itself.
 - **Downgrading to an older mssh version breaks `IdentityFile`.** An older build has no concept of a sealed key and hands ssh the ciphertext as-is, which ssh rejects as a malformed key. Re-run `mssh config add`'s key pull, or restore the key manually, after a downgrade.
+- **An `MSSH_PASSWORD` you export is visible to anyone who can read `/proc/<pid>/environ`** of the shell or job that set it (another process running as the same user, or root) for as long as that shell or job lives — mssh's own scrub only removes it from mssh's and its children's environment, not from the process that exported it.
+- **An inline `MSSH_PASSWORD=... mssh <host>` lands in your shell history** unless you take your shell's usual precautions (a leading space with `HISTCONTROL=ignorespace`, `set +o history`, an `EnvironmentFile`/`.env`-style indirection instead of an inline value, etc.) — mssh has no way to prevent this.
 - **`mssh update`'s checksum check doesn't verify who published the release.** It confirms the downloaded archive matches the checksum published in the *same* GitHub release, catching corruption or a truncated download — not a compromised GitHub account or a malicious release pushed under it. Trust for that path rests on TLS to GitHub plus the security of the `dimaskiddo` account, the same as manually downloading a release yourself.
 
 ---

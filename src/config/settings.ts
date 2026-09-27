@@ -5,10 +5,9 @@ import { expandHome, defaultEncConfigPath, msshRootDir } from "./paths";
 export type Settings = {
   DEFAULT_SSH_KEY_PATH?: string;
   MSSH_CONFIG_PATH?: string;
-  MSSH_PASSWORD?: string;
 };
 
-const SETTINGS_KEYS = ["DEFAULT_SSH_KEY_PATH", "MSSH_CONFIG_PATH", "MSSH_PASSWORD"] as const;
+const SETTINGS_KEYS = ["DEFAULT_SSH_KEY_PATH", "MSSH_CONFIG_PATH"] as const;
 const PATH_KEYS = new Set<(typeof SETTINGS_KEYS)[number]>(["DEFAULT_SSH_KEY_PATH", "MSSH_CONFIG_PATH"]);
 
 function envFilePath(): string {
@@ -82,8 +81,17 @@ export function pickSettings(raw: unknown): Settings {
 
 export type LoadedSettings = {
   settings: Settings;
-  sourcePath: string | undefined; // which file was actually read, for the permission warning
+  sourcePath: string | undefined; // which file was actually read, for the stale-password warning
+  storedPassword: boolean; // MSSH_PASSWORD was present in that file — ignored, but worth warning about
 };
+
+// True for any present, non-empty MSSH_PASSWORD regardless of its type — a
+// numeric YAML password still leaks even though pickSettings would reject it.
+export function hasStoredPassword(raw: unknown): boolean {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const value = (raw as Record<string, unknown>).MSSH_PASSWORD;
+  return value !== undefined && value !== null && value !== "";
+}
 
 // config.yaml wins over .env when both exist.
 export function loadSettingsFrom(yamlPath: string, envPath: string): LoadedSettings {
@@ -100,15 +108,15 @@ export function loadSettingsFrom(yamlPath: string, envPath: string): LoadedSetti
       // line, which may contain a secret.
       throw new Error(`malformed config.yaml at ${yamlPath}`);
     }
-    return { settings: pickSettings(parsed), sourcePath: yamlPath };
+    return { settings: pickSettings(parsed), sourcePath: yamlPath, storedPassword: hasStoredPassword(parsed) };
   }
 
   if (existsSync(envPath)) {
     const parsed = parseEnvText(readFileSync(envPath, "utf8"));
-    return { settings: pickSettings(parsed), sourcePath: envPath };
+    return { settings: pickSettings(parsed), sourcePath: envPath, storedPassword: hasStoredPassword(parsed) };
   }
 
-  return { settings: {}, sourcePath: undefined };
+  return { settings: {}, sourcePath: undefined, storedPassword: false };
 }
 
 export function loadSettings(): LoadedSettings {

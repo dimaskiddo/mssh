@@ -65,7 +65,7 @@ export function validateNewAlias(value: string, existingHosts: Host[]): true | s
 }
 
 export async function runAdd(): Promise<void> {
-  const { loaded, path, password } = await openConfig({ forcePrompt: false });
+  const { loaded, path, password } = await openConfig();
   const { settings } = loaded;
 
   const existingHosts = loadHosts(path, password);

@@ -13,7 +13,7 @@ export function findDependents(hosts: Host[], names: string[]): Host[] {
 }
 
 export async function runDelete(name?: string): Promise<void> {
-  const { path, password } = await openConfig({ forcePrompt: false });
+  const { path, password } = await openConfig();
 
   const hosts = loadHosts(path, password);
   reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);

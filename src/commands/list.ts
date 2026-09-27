@@ -37,7 +37,7 @@ export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[
 }
 
 export async function runList(order: SortOrder = "asc"): Promise<void> {
-  const { path, password } = await openConfig({ forcePrompt: true });
+  const { path, password } = await openConfig();
 
   const hosts = parse(loadRaw(path, password));
   reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
@@ -62,7 +62,7 @@ export async function runList(order: SortOrder = "asc"): Promise<void> {
 
 // Bare `mssh`: the one password prompt drives both list and connect — no second decrypt.
 export async function runListConnect(order: SortOrder = "asc", spawnFn?: SpawnFn): Promise<void> {
-  const { path, password } = await openConfig({ forcePrompt: true });
+  const { path, password } = await openConfig();
 
   const raw = loadRaw(path, password);
   const hosts = parse(raw);

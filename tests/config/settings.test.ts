@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { configPath, parseEnvText, pickSettings, loadSettingsFrom } from "../../src/config/settings";
+import { configPath, parseEnvText, pickSettings, hasStoredPassword, loadSettingsFrom } from "../../src/config/settings";
 import { defaultEncConfigPath } from "../../src/config/paths";
 import { withScratchDir as scratch } from "../helpers";
 
@@ -51,23 +51,21 @@ test("parseEnvText does not treat a quoted value's internal # as a comment", () 
 
 test("pickSettings keeps only known keys and drops empty values", () => {
   const raw = {
-    MSSH_PASSWORD: "hunter2",
+    DEFAULT_SSH_KEY_PATH: "/opt/keys/id_rsa",
     MSSH_CONFIG_PATH: "",
     UNKNOWN_KEY: "nope",
   };
-  expect(pickSettings(raw)).toEqual({ MSSH_PASSWORD: "hunter2" });
+  expect(pickSettings(raw)).toEqual({ DEFAULT_SSH_KEY_PATH: "/opt/keys/id_rsa" });
 });
 
-test("pickSettings expands ~ in path-valued keys but not in MSSH_PASSWORD", () => {
+test("pickSettings expands ~ in path-valued keys", () => {
   const raw = {
     DEFAULT_SSH_KEY_PATH: "~/.ssh/id_rsa",
     MSSH_CONFIG_PATH: "~/elsewhere/ssh_config.enc",
-    MSSH_PASSWORD: "~not-a-path",
   };
   expect(pickSettings(raw)).toEqual({
     DEFAULT_SSH_KEY_PATH: join(homedir(), ".ssh/id_rsa"),
     MSSH_CONFIG_PATH: join(homedir(), "elsewhere/ssh_config.enc"),
-    MSSH_PASSWORD: "~not-a-path",
   });
 });
 
@@ -78,11 +76,11 @@ test("pickSettings returns an empty object for non-object input", () => {
 });
 
 test("pickSettings throws loudly on a non-string value instead of silently discarding it", () => {
-  expect(() => pickSettings({ MSSH_PASSWORD: 12345 })).toThrow(/MSSH_PASSWORD must be a string/);
+  expect(() => pickSettings({ DEFAULT_SSH_KEY_PATH: 12345 })).toThrow(/DEFAULT_SSH_KEY_PATH must be a string/);
 });
 
 test("pickSettings throws loudly on array-shaped input (a stray multi-document YAML)", () => {
-  expect(() => pickSettings([{ MSSH_PASSWORD: "hunter2" }])).toThrow(/expected a single mapping/);
+  expect(() => pickSettings([{ DEFAULT_SSH_KEY_PATH: "~/.ssh/id_rsa" }])).toThrow(/expected a single mapping/);
 });
 
 test("pickSettings rejects a relative MSSH_CONFIG_PATH", () => {
@@ -103,16 +101,47 @@ test("configPath falls back to the default location under ~/.mssh", () => {
   expect(configPath({})).toBe(defaultEncConfigPath());
 });
 
+test("hasStoredPassword is true when MSSH_PASSWORD is a non-empty string", () => {
+  expect(hasStoredPassword({ MSSH_PASSWORD: "hunter2" })).toBe(true);
+});
+
+test("hasStoredPassword is true even for a non-string value, since a numeric YAML password still leaks", () => {
+  expect(hasStoredPassword({ MSSH_PASSWORD: 12345 })).toBe(true);
+});
+
+test("hasStoredPassword is false for an empty string", () => {
+  expect(hasStoredPassword({ MSSH_PASSWORD: "" })).toBe(false);
+});
+
+test("hasStoredPassword is false for null", () => {
+  expect(hasStoredPassword({ MSSH_PASSWORD: null })).toBe(false);
+});
+
+test("hasStoredPassword is false when the key is absent", () => {
+  expect(hasStoredPassword({})).toBe(false);
+});
+
+test("hasStoredPassword is false for array-shaped input", () => {
+  expect(hasStoredPassword([{ MSSH_PASSWORD: "hunter2" }])).toBe(false);
+});
+
+test("hasStoredPassword is false for non-object input", () => {
+  expect(hasStoredPassword(null)).toBe(false);
+  expect(hasStoredPassword("not an object")).toBe(false);
+  expect(hasStoredPassword(undefined)).toBe(false);
+});
+
 test("loadSettingsFrom prefers config.yaml over .env when both exist", () => {
   withScratchDir((dir) => {
     const yamlPath = join(dir, "config.yaml");
     const envPath = join(dir, ".env");
-    writeFileSync(yamlPath, "MSSH_PASSWORD: from-yaml\n");
-    writeFileSync(envPath, "MSSH_PASSWORD=from-env\n");
+    writeFileSync(yamlPath, "DEFAULT_SSH_KEY_PATH: /from/yaml\n");
+    writeFileSync(envPath, "DEFAULT_SSH_KEY_PATH=/from/env\n");
 
-    const { settings, sourcePath } = loadSettingsFrom(yamlPath, envPath);
-    expect(settings.MSSH_PASSWORD).toBe("from-yaml");
+    const { settings, sourcePath, storedPassword } = loadSettingsFrom(yamlPath, envPath);
+    expect(settings.DEFAULT_SSH_KEY_PATH).toBe("/from/yaml");
     expect(sourcePath).toBe(yamlPath);
+    expect(storedPassword).toBe(false);
   });
 });
 
@@ -120,11 +149,12 @@ test("loadSettingsFrom falls back to .env when config.yaml is absent", () => {
   withScratchDir((dir) => {
     const yamlPath = join(dir, "config.yaml");
     const envPath = join(dir, ".env");
-    writeFileSync(envPath, "MSSH_PASSWORD=from-env\n");
+    writeFileSync(envPath, "DEFAULT_SSH_KEY_PATH=/from/env\n");
 
-    const { settings, sourcePath } = loadSettingsFrom(yamlPath, envPath);
-    expect(settings.MSSH_PASSWORD).toBe("from-env");
+    const { settings, sourcePath, storedPassword } = loadSettingsFrom(yamlPath, envPath);
+    expect(settings.DEFAULT_SSH_KEY_PATH).toBe("/from/env");
     expect(sourcePath).toBe(envPath);
+    expect(storedPassword).toBe(false);
   });
 });
 
@@ -132,7 +162,19 @@ test("loadSettingsFrom returns empty settings when neither file exists", () => {
   withScratchDir((dir) => {
     const yamlPath = join(dir, "config.yaml");
     const envPath = join(dir, ".env");
-    expect(loadSettingsFrom(yamlPath, envPath)).toEqual({ settings: {}, sourcePath: undefined });
+    expect(loadSettingsFrom(yamlPath, envPath)).toEqual({ settings: {}, sourcePath: undefined, storedPassword: false });
+  });
+});
+
+test("loadSettingsFrom reports storedPassword: true when config.yaml carries MSSH_PASSWORD, without keeping it in settings", () => {
+  withScratchDir((dir) => {
+    const yamlPath = join(dir, "config.yaml");
+    const envPath = join(dir, ".env");
+    writeFileSync(yamlPath, "MSSH_PASSWORD: hunter2\n");
+
+    const { settings, storedPassword } = loadSettingsFrom(yamlPath, envPath);
+    expect(storedPassword).toBe(true);
+    expect(settings).not.toHaveProperty("MSSH_PASSWORD");
   });
 });
 

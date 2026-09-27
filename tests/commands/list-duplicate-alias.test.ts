@@ -21,7 +21,7 @@ writeFileSync(configFilePath, seal(dupText, TEST_PASSWORD));
 // settings, and overriding it separately would leak; see ssh/session-spawn.test.ts.
 mock.module("../../src/config/settings", () => ({
   ...realSettings,
-  loadSettings: () => ({ settings: { MSSH_CONFIG_PATH: configFilePath }, sourcePath: undefined }),
+  loadSettings: () => ({ settings: { MSSH_CONFIG_PATH: configFilePath }, sourcePath: undefined, storedPassword: false }),
 }));
 
 mock.module("../../src/config/password", () => ({

@@ -10,6 +10,7 @@ import { runChangePassword } from "./src/commands/change-password";
 import { runUpdate } from "./src/commands/update";
 import { configPath, loadSettings, type Settings } from "./src/config/settings";
 import { defaultEncConfigPath, keysDir, runDir, toDisplayPath } from "./src/config/paths";
+import { takeEnvPassword } from "./src/config/password";
 import { legacyEncConfigPath, migrateLegacyConfigFrom } from "./src/config/legacy";
 import { sweepOrphanedTempFiles, sweepBinaryLeftovers } from "./src/fs/sweep";
 import { isCompiledBinary } from "./src/core/platform";
@@ -61,6 +62,11 @@ function warnInvalidSort(invalid: string | undefined): void {
 }
 
 async function main(): Promise<void> {
+  // First line, before any spawn (including update/version dispatch): ssh and
+  // its ProxyJump re-exec child inherit process.env, so this must be gone
+  // before either can start.
+  const envPassword = takeEnvPassword(process.env);
+
   const [cmd, ...rest] = process.argv.slice(2);
 
   // Best-effort, independent of any command: a previous `update` on POSIX
@@ -90,9 +96,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { settings } = loadSettings();
+  const { settings, sourcePath, storedPassword } = loadSettings();
   migrateLegacyConfig(settings);
   sweepTempFiles(settings);
+
+  if (storedPassword && sourcePath !== undefined) {
+    console.error(
+      `Warning: MSSH_PASSWORD in ${toDisplayPath(sourcePath)} is ignored and stored in plaintext — remove it. ` +
+        "For unattended `mssh <host>`, export it in the environment instead.",
+    );
+  }
 
   if (cmd === "setup") {
     rejectExtraArgs(rest);
@@ -102,7 +115,7 @@ async function main(): Promise<void> {
 
   if (cmd === "change-password") {
     rejectExtraArgs(rest);
-    await runChangePassword();
+    await runChangePassword(envPassword !== undefined);
     return;
   }
 
@@ -152,7 +165,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runConnect(argv);
+  await runConnect(argv, envPassword);
 }
 
 main().catch((err: unknown) => {

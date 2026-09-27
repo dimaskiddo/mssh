@@ -24,7 +24,9 @@ export function requireExistingConfig(path: string): void {
 }
 
 // change-password skips this: it prints "Re-keying" before the prompt.
-export async function openConfig({ forcePrompt }: { forcePrompt: boolean }): Promise<{
+// envPassword is passed only by runConnect — every other caller omits it and
+// always prompts.
+export async function openConfig(envPassword?: string): Promise<{
   loaded: LoadedSettings;
   path: string;
   password: string;
@@ -32,6 +34,6 @@ export async function openConfig({ forcePrompt }: { forcePrompt: boolean }): Pro
   const loaded = loadSettings();
   const path = configPath(loaded.settings);
   requireExistingConfig(path);
-  const password = await resolvePassword(loaded, { forcePrompt });
+  const password = await resolvePassword(envPassword);
   return { loaded, path, password };
 }

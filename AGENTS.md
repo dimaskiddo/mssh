@@ -28,10 +28,10 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **Crypto** | `src/core/crypto.ts` — `seal`/`open`, AES-256-GCM + scrypt at OWASP-minimum cost. Versioned payload with a fresh salt and IV per save. Pure, no I/O |
 | **Store** | `src/core/store.ts` — bridges crypto ↔ fs. `loadRaw`/`loadHosts`/`saveHosts`, `sealKeyFile`/`openKeyFile` for pulled keys |
 | **Platform** | `src/core/platform.ts` — `isWindows`, `isCompiledBinary` |
-| **RequireConfig / Exit** | `src/core/require-config.ts` — `requireExistingConfig()` and `openConfig({forcePrompt})`, the shared `loadSettings`→`configPath`→`requireExistingConfig`→`resolvePassword` preamble. `src/core/exit.ts` — `fatal()` and `spawnFailureReason()`, the shared spawn-failure-to-message fallback (control-character-stripped) used by `acl.ts`/`remote-keys.ts` |
+| **RequireConfig / Exit** | `src/core/require-config.ts` — `requireExistingConfig()` and `openConfig(envPassword?)`, the shared `loadSettings`→`configPath`→`requireExistingConfig`→`resolvePassword` preamble. `envPassword` flows through only from `runConnect`; every other caller passes none, so `resolvePassword` always prompts for them. `src/core/exit.ts` — `fatal()` and `spawnFailureReason()`, the shared spawn-failure-to-message fallback (control-character-stripped) used by `acl.ts`/`remote-keys.ts` |
 | **Settings** | `src/config/settings.ts` — `~/.mssh` path layout, `config.yaml`/`.env` loading, `loadSettings`/`configPath` |
 | **Paths** | `src/config/paths.ts` — `homeDir`/`msshRootDir`/`runDir`/`keysDir`/`defaultEncConfigPath`/`expandHome` |
-| **Password** | `src/config/password.ts` — `resolvePassword`, the single place the auth-prompt split lives. `promptNewPassword()` is the set-password + confirm + match check shared by `setup`/`change-password` |
+| **Password** | `src/config/password.ts` — `resolvePassword(envPassword?)`, the single place the auth-prompt split lives; `takeEnvPassword(env)` reads and deletes `MSSH_PASSWORD` from a process env object. `promptNewPassword()` is the set-password + confirm + match check shared by `setup`/`change-password` |
 | **Legacy** | `src/config/legacy.ts` — one-time migration from a pre-`~/.mssh` config location |
 | **SSHConfig** | `src/ssh/ssh-config.ts` — `parse`/`serialize`. Directive guards live in `ssh/directives.ts` (`REFUSED_DIRECTIVES`, `normalizeDirectiveKey`), tokenizing in `ssh/tokens.ts`, field validation in `ssh/validate.ts`, and pure `Host` mutations (`addHost`, `updateHostField`, `deleteHost`, `hostsWithoutProxyJump`, `emptyToUndefined`, `findHost`) in `ssh/host.ts`. `extras[]` preserves unmodeled directives across an edit round-trip |
 | **Argv / Session** | `src/ssh/argv.ts` — `rejectedFlags`/`firstPositional`, the ssh-flag guard. `src/ssh/session.ts` — `connectWithRaw` + the ProxyJump/temp-file lifetime rationale |
@@ -50,14 +50,14 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 ## CLI
 
 ```
-mssh                                # list hosts (ALWAYS prompts, ignores MSSH_PASSWORD)
+mssh                                # list hosts
 mssh setup                          # create the encrypted config
-mssh config list                    # list hosts (ALWAYS prompts)
+mssh config list                    # list hosts
 mssh config add                     # add a host, optional ProxyJump, optional remote key fetch
 mssh config edit [name]             # edit one modeled field
 mssh config delete [name]           # delete a host, warns about dependents
 mssh config migrate-keys            # encrypt any pulled key still left plaintext
-mssh <host> [ssh flags...]          # connect — all flags pass through untouched
+mssh <host> [ssh flags...]          # connect — all flags pass through untouched; only this may take the password from MSSH_PASSWORD in the environment
 mssh change-password                # re-encrypt the config under a new password (ALWAYS prompts for current)
 mssh update                         # replace the running binary with the latest GitHub release — no prompt, no ~/.mssh
 mssh version, --version             # print product name, version, author — no prompt, no disk write
@@ -76,8 +76,10 @@ mssh version, --version             # print product name, version, author — no
 ### Secure Writes
 - Every write of sensitive data goes through `src/fs/secure-write.ts` (and `src/fs/executable.ts` for the executable-swap path). No raw `writeFileSync`/`mkdirSync`/`Bun.write` anywhere else in `src/`. On Windows, POSIX `mode` is silently ignored, so the `icacls` path (`src/fs/acl.ts`) must throw rather than leave an exposed file. Saves to the encrypted config (`saveHosts`) go through `writeSecureAtomic` — a same-directory temp file plus `renameSync`, so a write that dies mid-way never truncates or loses the only copy of the ciphertext. `replaceExecutable` (`src/fs/executable.ts`) swaps the running `mssh` binary the same way for `commands/update.ts` — sibling temp file, `fsync`, atomic rename on POSIX / rename-aside on Windows — but preserves the original file's mode/ACL instead of `icacls`-locking it, since a shared install's permissions must not narrow to whichever user ran `mssh update`.
 
-### Password Routing
-- `resolvePassword({forcePrompt})` is the single place the auth split lives: `true` for bare `mssh`, `config list`, and `change-password`'s current-password step; `false` everywhere else, including `config migrate-keys`. Changing this at a call site is a security regression.
+### Password Routing (Vault Mode)
+- Every command prompts. The one exception is a direct `mssh <host> [ssh args…]`, which may take the password from `MSSH_PASSWORD` in the process environment — for cron, systemd, and other unattended jobs. `resolvePassword(envPassword?)` (`src/config/password.ts`) is the single auth point: it returns `envPassword` when given, otherwise it prompts.
+- `envPassword` is structural, not a flag: `index.ts`'s `main()` calls `takeEnvPassword(process.env)` as its first line — before `version`, `update`, or the sweep, so no spawned child (ssh, its ProxyJump re-exec, `icacls`) ever inherits `MSSH_PASSWORD` — and threads the result **only** into `runConnect(argv, envPassword)`. Every other command's call to `openConfig()` passes no argument, so `resolvePassword` always prompts for them. Passing `envPassword` to any command other than `runConnect`, or dropping the `takeEnvPassword` scrub, is a security regression.
+- `MSSH_PASSWORD` is never read from `config.yaml`/`.env`. `hasStoredPassword()` (`src/config/settings.ts`) detects one there; `index.ts` then warns and ignores it — a plaintext password on disk is never honored, only flagged.
 
 ### Command-Executing Directives
 - `EXECUTING_DIRECTIVES` (`src/ssh/directives.ts`) is the single source of truth for `ssh_config` directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match`, etc.). `CONFIG_REDIRECTING_DIRECTIVES` (currently just `Include`) covers the other way a directive can reach the same outcome indirectly. `REFUSED_DIRECTIVES` is a derived union of both, exported as the single guard set — `parse()` and `assertSerializable()` (`src/ssh/ssh-config.ts`) and `rejectedFlags()` (`src/ssh/argv.ts`) all consume `REFUSED_DIRECTIVES`, never `EXECUTING_DIRECTIVES` directly. Add a directive to one of the two source sets, never to `REFUSED_DIRECTIVES` itself — that is the one derivation point and it must never drift into a second copy.
@@ -139,11 +141,11 @@ mssh/
 │   │   ├── store.ts           # loadRaw/loadHosts/saveHosts — bridges crypto + fs
 │   │   ├── platform.ts        # isWindows, isCompiledBinary
 │   │   ├── exit.ts            # fatal(), spawnFailureReason()
-│   │   └── require-config.ts  # requireExistingConfig(), openConfig({forcePrompt})
+│   │   └── require-config.ts  # requireExistingConfig(), openConfig(envPassword?)
 │   ├── config/
 │   │   ├── settings.ts        # ~/.mssh path layout, config.yaml/.env loading, loadSettings/configPath
 │   │   ├── paths.ts           # homeDir/msshRootDir/runDir/keysDir/defaultEncConfigPath/expandHome
-│   │   ├── password.ts        # resolvePassword — the single auth-prompt split; promptNewPassword()
+│   │   ├── password.ts        # resolvePassword(envPassword?), takeEnvPassword — the single auth-prompt split; promptNewPassword()
 │   │   └── legacy.ts          # migration from a pre-~/.mssh config location
 │   ├── fs/
 │   │   ├── secure-write.ts    # writeSecure/writeSecureAtomic/ensureSecureDir/tryUnlink — chmod (POSIX) / icacls (Windows)
@@ -186,7 +188,8 @@ mssh/
 ├── tests/                     # bun:test unit tests, mirrors src/
 ├── .scripts/release.ts        # GitHub release automation (build, archive, checksum, upload)
 ├── dist/                      # Build output (generated, gitignored)
-├── .env.example               # Settings template
+├── .env.example               # Settings template (KEY=value form)
+├── config.yaml.example        # Settings template (YAML form)
 ├── package.json               # Scripts, dependencies, six build targets
 ├── tsconfig.json              # Strict TypeScript config
 ├── bun.lock                   # Locked dependency tree
@@ -202,7 +205,7 @@ mssh/
 
 | File | Purpose |
 |---|---|
-| `.env.example` | Settings template — `MSSH_CONFIG_PATH`, `DEFAULT_SSH_KEY_PATH`, `MSSH_PASSWORD` |
+| `.env.example`, `config.yaml.example` | Settings templates (`KEY=value` and YAML form) — `MSSH_CONFIG_PATH`, `DEFAULT_SSH_KEY_PATH`. No password setting: `MSSH_PASSWORD` is env-only, read by `takeEnvPassword` in `index.ts` |
 | `README.md` | Threat model, usage, install instructions |
 | `src/core/crypto.ts` | Payload format and key derivation — source of truth for the encryption scheme |
 | `src/fs/secure-write.ts`, `src/fs/acl.ts` | Platform permission enforcement — source of truth for the Windows ACL approach |
