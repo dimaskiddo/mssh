@@ -65,6 +65,31 @@ test("buildNewHost does not store empty strings for optional fields", () => {
   expect(Object.prototype.hasOwnProperty.call(host, "port")).toBe(true);
 });
 
+test("buildNewHost includes tags when provided", () => {
+  const host = buildNewHost({
+    name: "web1",
+    hostname: "",
+    port: "",
+    user: "",
+    identityFile: "",
+    proxyJump: undefined,
+    tags: ["alibaba", "stage"],
+  });
+  expect(host.tags).toEqual(["alibaba", "stage"]);
+});
+
+test("buildNewHost omits the tags key entirely when none are given", () => {
+  const host = buildNewHost({
+    name: "web1",
+    hostname: "",
+    port: "",
+    user: "",
+    identityFile: "",
+    proxyJump: undefined,
+  });
+  expect(Object.prototype.hasOwnProperty.call(host, "tags")).toBe(false);
+});
+
 test("hostsWithoutProxyJump returns empty when every host is already proxied, which is runAdd's exit-1 precondition", () => {
   const hosts: Host[] = [
     { names: ["web1"], proxyJump: "bastion", extras: [] },

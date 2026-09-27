@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { isValidFieldValue, isValidHostName, isValidNewHostName, isValidPort } from "../../src/ssh/validate";
+import { isValidFieldValue, isValidHostName, isValidNewHostName, isValidPort, isValidTag } from "../../src/ssh/validate";
 
 test("isValidFieldValue rejects newlines and carriage returns", () => {
   expect(isValidFieldValue("plain-value")).toBe(true);
@@ -61,4 +61,19 @@ test("isValidPort rejects out-of-range, non-numeric, and malformed values", () =
   expect(isValidPort("22 ")).toBe(false);
   expect(isValidPort("2.2")).toBe(false);
   expect(isValidPort("０２２")).toBe(false); // full-width digits — Number() would otherwise coerce these
+});
+
+test("isValidTag accepts a plain lowercase tag and one with allowed punctuation", () => {
+  expect(isValidTag("stage")).toBe(true);
+  expect(isValidTag("ali-baba_1.x")).toBe(true);
+});
+
+// Only the lowercase form is ever stored — splitTags lowercases on the way in.
+test("isValidTag rejects empty, whitespace, comma, hash, newline, and uppercase", () => {
+  expect(isValidTag("")).toBe(false);
+  expect(isValidTag("a b")).toBe(false);
+  expect(isValidTag("a,b")).toBe(false);
+  expect(isValidTag("a#b")).toBe(false);
+  expect(isValidTag("a\nb")).toBe(false);
+  expect(isValidTag("A")).toBe(false);
 });

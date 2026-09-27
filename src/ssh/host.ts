@@ -5,6 +5,7 @@ export type Host = {
   user?: string;
   identityFile?: string;
   proxyJump?: string;
+  tags?: string[];
   extras: Array<{ key: string; value: string }>;
 };
 
@@ -141,5 +142,44 @@ export function rewriteIdentityFiles(hosts: Host[], mapping: Map<string, string>
     const tempPath = mapping.get(host.identityFile);
     if (tempPath === undefined) return host;
     return { ...host, identityFile: tempPath };
+  });
+}
+
+// Pure split/normalize only — no validation. Keeping this separate from
+// isValidTag means an invalid piece in a filter simply fails to match any
+// stored tag (narrows to nothing) rather than being silently dropped
+// (which would widen the filter to match everything).
+export function splitTags(text: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const piece of text.split(",")) {
+    const tag = piece.trim().toLowerCase();
+    if (tag === "" || seen.has(tag)) continue;
+    seen.add(tag);
+    result.push(tag);
+  }
+  return result;
+}
+
+// tags: [] is "no filter", not "no tags" — a host with no tags key never
+// matches a non-empty filter, matching how an old-format config behaves.
+export function filterByTags(hosts: Host[], tags: string[]): Host[] {
+  if (tags.length === 0) return hosts;
+  return hosts.filter((h) => tags.every((t) => h.tags?.includes(t)));
+}
+
+// Same first-wins/undefined-clears convention as updateHostField; an empty
+// array removes the key entirely rather than storing [], mirroring how an
+// old-format host has no tags key at all.
+export function setHostTags(hosts: Host[], name: string, tags: string[]): Host[] {
+  let updated = false;
+  return hosts.map((h) => {
+    if (updated || !hostHasName(h, name)) return h;
+    updated = true;
+    if (tags.length === 0) {
+      const { tags: _tags, ...rest } = h;
+      return rest;
+    }
+    return { ...h, tags };
   });
 }

@@ -123,10 +123,16 @@ To build all six platform targets: `bun run build:all`.
     mssh config list --sort=dsc   # descending
     mssh --sort=cfg               # picker in config-file order
     ```
+*   **`--tags=a,b`**: Filters the listing to hosts carrying **every** given tag (comma-separated, case-insensitive; repeat the flag to combine). If no host matches, prints `No hosts match tag(s): ...` and exits without a picker.
+    ```sh
+    mssh config list --tags=alibaba       # only hosts tagged "alibaba"
+    mssh --tags=alibaba,stage             # only hosts tagged both
+    ```
 
 ### ✏️ Host Management
-*   **`mssh config add`**: Prompts for hostname/port/user/identity file, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`. The pulled key is sealed under the master password before it ever touches disk. If a key was already pulled from that jump host, it's offered for reuse first — no second connection needed.
-*   **`mssh config edit [name]`**: Edits one modeled field on a host (`HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump`). Loads, mutates in memory, and re-encrypts — no plaintext ever hits disk.
+*   **`mssh config add`**: Prompts for hostname/port/user/identity file/tags, optionally sets `ProxyJump` to an existing jump-eligible host, and optionally reaches the new host directly to fetch a private key from its `~/.ssh`. The pulled key is sealed under the master password before it ever touches disk. If a key was already pulled from that jump host, it's offered for reuse first — no second connection needed.
+*   **`mssh config edit [name]`**: Edits one modeled field on a host (`HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump`) or its `Tags`. Loads, mutates in memory, and re-encrypts — no plaintext ever hits disk.
+*   **Tags**: comma-separated labels (letters, digits, `.`, `_`, `-`) for filtering with `--tags=`, stored as an inert `## Tags a,b` comment on the line after `Host` — real `ssh` ignores it, so it's invisible outside mssh. A config saved before this feature simply has no such line, which mssh treats as an untagged host.
 *   **`mssh config delete [name]`**: Deletes a host. Warns if other hosts `ProxyJump` through it before asking for confirmation.
 *   **`mssh config migrate-keys`**: Encrypts any key under `~/.mssh/keys` still left plaintext by an older mssh version. Every other command does this automatically on its next run; this one exists to run it explicitly and see the result (`Encrypted N pulled key(s)...` or `No plaintext keys found.`).
 
@@ -157,8 +163,6 @@ MSSH_PASSWORD=hunter2 mssh bastion -N -L 8080:localhost:80
 EnvironmentFile=/etc/mssh-tunnel.env
 ExecStart=/usr/local/bin/mssh bastion -N -L 8080:localhost:80
 ```
-
-See "Does not protect against" in the Threat Model for what this exception does and doesn't cover.
 
 ### ⬆️ Updating
 *   **`mssh update`**: Downloads the latest release for your OS/architecture, verifies it against the release's `checksum.txt`, and replaces the running binary in place. Never downgrades — if you're already on the latest version (or newer), it says so and does nothing. Running it is the only confirmation asked; there's no extra prompt.
@@ -191,31 +195,6 @@ Recognized settings (in either `config.yaml` or `.env`):
 | `DEFAULT_SSH_KEY_PATH` | Default identity file offered when adding a new host. When unset, `mssh` offers a key found in your `~/.ssh` (preferring `id_rsa`). |
 
 The master password is never a setting — it's always prompted for, except that a direct `mssh <host>` connect may take it from `MSSH_PASSWORD` in the process environment (see "Unattended Use" above). A `MSSH_PASSWORD` found in `config.yaml` or `.env` is ignored, with a warning, since it would mean a plaintext password sitting on disk.
-
----
-
-## 🔒 Threat Model
-
-### Protects against
-
-- Backup, cloud-sync, or accidental git commit of your SSH config — on disk it is always ciphertext.
-- Casual shoulder-surfing of your host inventory — listing hosts (`mssh`, `mssh config list`) always requires the password; the `MSSH_PASSWORD` unattended-connect exception applies only to a direct `mssh <host>`.
-- A stray `MSSH_PASSWORD` sitting in `config.yaml`/`.env` from an older mssh version — it's no longer read from there; mssh warns and ignores it instead.
-- The `MSSH_PASSWORD` you export for an unattended connect leaking to `ssh` or the remote host — mssh deletes it from its own environment before spawning anything, and before ssh could pass it along via `SendEnv`.
-- Other local users reading the decrypted config mid-session — the run directory and the decrypted temp file are both restricted to your user account. On POSIX, that plaintext is also deleted as soon as ssh finishes authenticating, not only when the session ends, shrinking the window it exists in to seconds. On Windows it persists for the whole session, since Windows' `ssh.exe` has no way to signal that moment.
-- A private key pulled from a jump host during `mssh config add` — it's sealed under the master password at rest in `~/.mssh/keys`, the same as the config, and decrypted to the restricted run directory only for the lifetime of a connection. A key pulled by an older mssh version is upgraded to sealed automatically the next time any command decrypts your config.
-- Offline brute-force of a stolen `config` or a stolen key under `~/.mssh/keys` — key derivation is deliberately slow and memory-hard, making guessing attempts costly.
-- A hand-imported or hand-edited config turning `mssh <host>` into a launcher for arbitrary programs — directives that make ssh execute a program (`ProxyCommand`, `LocalCommand`, `Match exec`, `KnownHostsCommand`, etc.) are dropped on load and refused on save. `ssh` itself is always invoked by its resolved absolute path, resolved once at startup — later changes to `PATH`, or a malicious entry placed ahead of the real `ssh` before that resolution happens, are outside what mssh can control; that ordering is your own trust boundary, the same as it is for any other program you run.
-
-### Does not protect against
-
-- **Key material is never wiped from memory.** The derived encryption key and the master password both live as long-lived `Buffer`/`string` values for the duration of a command, and the decrypted config is held as a JS string, which is immutable and cannot be zeroed. A process memory dump or swapped page during that window can expose them. This is a limitation of using JS strings for secrets, not something a partial fix would meaningfully close.
-- **The encrypted format's version byte is unauthenticated.** The on-disk layout is `version‖salt‖iv‖tag‖ciphertext`, but only the ciphertext is covered by the AEAD tag — the version byte itself is not bound in as associated data. Tampering with it today just changes which error path a corrupted file takes; it becomes a real concern only if a second format version is ever introduced, at which point the version byte must be authenticated (e.g. via `setAAD`) to prevent a downgrade attack.
-- **Sealing a pulled key in place doesn't securely erase the plaintext it replaced.** The write is an atomic rename over the original file, not a wipe — on an SSD or a copy-on-write filesystem, the old plaintext blocks can persist and be recoverable until reclaimed by the device or filesystem itself.
-- **Downgrading to an older mssh version breaks `IdentityFile`.** An older build has no concept of a sealed key and hands ssh the ciphertext as-is, which ssh rejects as a malformed key. Re-run `mssh config add`'s key pull, or restore the key manually, after a downgrade.
-- **An `MSSH_PASSWORD` you export is visible to anyone who can read `/proc/<pid>/environ`** of the shell or job that set it (another process running as the same user, or root) for as long as that shell or job lives — mssh's own scrub only removes it from mssh's and its children's environment, not from the process that exported it.
-- **An inline `MSSH_PASSWORD=... mssh <host>` lands in your shell history** unless you take your shell's usual precautions (a leading space with `HISTCONTROL=ignorespace`, `set +o history`, an `EnvironmentFile`/`.env`-style indirection instead of an inline value, etc.) — mssh has no way to prevent this.
-- **`mssh update`'s checksum check doesn't verify who published the release.** It confirms the downloaded archive matches the checksum published in the *same* GitHub release, catching corruption or a truncated download — not a compromised GitHub account or a malicious release pushed under it. Trust for that path rests on TLS to GitHub plus the security of the `dimaskiddo` account, the same as manually downloading a release yourself.
 
 ---
 

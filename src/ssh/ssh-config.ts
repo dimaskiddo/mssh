@@ -1,7 +1,10 @@
 import { REFUSED_DIRECTIVES, normalizeDirectiveKey, isPermitLocalCommandNo } from "./directives";
 import { decodeTokens, decodeValue, stripComment, formatValue } from "./tokens";
-import { isValidFieldValue, isValidHostName } from "./validate";
-import { hostLabel, duplicateAlias, type Host, type ModeledField } from "./host";
+import { isValidFieldValue, isValidHostName, isValidTag } from "./validate";
+import { hostLabel, duplicateAlias, splitTags, type Host, type ModeledField } from "./host";
+
+// Matches "## Tags a,b" (any amount of whitespace after the ##, case-insensitive).
+const TAGS_COMMENT = /^##\s*Tags\s+(\S.*)$/i;
 
 const MODELED_FIELDS: Record<string, ModeledField> = {
   hostname: "hostname",
@@ -30,6 +33,20 @@ export function parse(text: string): Host[] {
 
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
+
+    // A comment ssh itself ignores, so it's inert to the real client. Checked
+    // before the generic '#'-skip so it can be read; before the first Host or
+    // after Match, current is undefined and it's dropped like any other
+    // comment. First one wins, like the modeled fields below.
+    if (current !== undefined && current.tags === undefined) {
+      const tagsMatch = TAGS_COMMENT.exec(line);
+      if (tagsMatch !== null) {
+        const tags = splitTags(tagsMatch[1] as string).filter(isValidTag);
+        if (tags.length > 0) current.tags = tags;
+        continue;
+      }
+    }
+
     if (line === "" || line.startsWith("#")) continue;
 
     const split = splitDirective(line);
@@ -130,6 +147,13 @@ function assertSerializable(host: Host): void {
       throw new Error(`invalid value for ${label} on host "${hostLabel(host)}"`);
     }
   }
+  if (host.tags !== undefined) {
+    for (const tag of host.tags) {
+      if (!isValidTag(tag)) {
+        throw new Error(`invalid tag ${JSON.stringify(tag)} on host "${hostLabel(host)}"`);
+      }
+    }
+  }
   for (const extra of host.extras) {
     if (!isValidFieldValue(extra.key) || !isValidFieldValue(extra.value)) {
       throw new Error(`invalid value for ${extra.key} on host "${hostLabel(host)}"`);
@@ -165,6 +189,7 @@ export function serialize(hosts: Host[]): string {
     assertSerializable(host);
 
     const lines = [`Host ${hostLabel(host)}`];
+    if (host.tags !== undefined && host.tags.length > 0) lines.push(`  ## Tags ${host.tags.join(",")}`);
     if (host.hostname !== undefined) lines.push(`  HostName ${formatValue(host.hostname)}`);
     if (host.port !== undefined) lines.push(`  Port ${formatValue(host.port)}`);
     if (host.user !== undefined) lines.push(`  User ${formatValue(host.user)}`);

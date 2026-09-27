@@ -7,18 +7,30 @@ import {
   hostsWithoutProxyJump,
   emptyToUndefined,
   hostLabel,
+  splitTags,
+  setHostTags,
   type Host,
   type ModeledField,
 } from "../ssh/host";
-import { isValidFieldValue, isValidPort } from "../ssh/validate";
+import { isValidFieldValue, isValidPort, isValidTag } from "../ssh/validate";
 import { promptInput, promptSelect } from "../cli/prompt";
-import { FIELD_LABELS, FIELD_PICKER_LABEL, fieldPrompt } from "../cli/field-labels";
+import { FIELD_LABELS, FIELD_PICKER_LABEL, TAGS_LABEL, fieldPrompt } from "../cli/field-labels";
 import { resolveTarget, hostChoices } from "../cli/pick-host";
 import { openConfig } from "../core/require-config";
 
-export const FIELD_CHOICES: Array<{ name: string; value: ModeledField }> = (
-  Object.keys(FIELD_LABELS) as ModeledField[]
-).map((value) => ({ name: FIELD_LABELS[value], value }));
+export const FIELD_CHOICES: Array<{ name: string; value: ModeledField | "tags" }> = [
+  ...(Object.keys(FIELD_LABELS) as ModeledField[]).map((value) => ({ name: FIELD_LABELS[value], value })),
+  { name: TAGS_LABEL, value: "tags" as const },
+];
+
+export function validateTags(value: string): true | string {
+  if (splitTags(value).every(isValidTag)) return true;
+  return "Tags may only contain letters, digits, '.', '_' or '-', separated by commas.";
+}
+
+export function tagsDefault(host: Host): string {
+  return host.tags?.join(",") ?? "";
+}
 
 // proxyJump's picker has no default-prefill like the text prompts below, so
 // KEEP distinguishes "leave as-is" from "(none)" — both would otherwise
@@ -64,11 +76,21 @@ export async function runEdit(name?: string): Promise<void> {
   if (!picked) return;
   const { host: target, targetName } = picked;
 
-  const field = await promptSelect<ModeledField>(fieldPrompt(FIELD_PICKER_LABEL), FIELD_CHOICES);
-  const value = await promptNewValue(hosts, target, field);
-  const resolved = value === KEEP ? target[field] : value;
+  const field = await promptSelect<ModeledField | "tags">(fieldPrompt(FIELD_PICKER_LABEL), FIELD_CHOICES);
 
-  const updated = updateHostField(hosts, targetName, field, resolved);
+  let updated: Host[];
+  if (field === "tags") {
+    const value = await promptInput(fieldPrompt(TAGS_LABEL), {
+      default: tagsDefault(target),
+      validate: validateTags,
+    });
+    updated = setHostTags(hosts, targetName, splitTags(value));
+  } else {
+    const value = await promptNewValue(hosts, target, field);
+    const resolved = value === KEEP ? target[field] : value;
+    updated = updateHostField(hosts, targetName, field, resolved);
+  }
+
   saveHosts(path, updated, password);
 
   console.log(`Host '${hostLabel(target)}' updated.`);

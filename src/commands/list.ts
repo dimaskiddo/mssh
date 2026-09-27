@@ -4,7 +4,7 @@ import { keysDir } from "../config/paths";
 import { loadRaw } from "../core/store";
 import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
 import { parse } from "../ssh/ssh-config";
-import { connectableNames, duplicateAlias } from "../ssh/host";
+import { connectableNames, duplicateAlias, filterByTags, splitTags } from "../ssh/host";
 import { promptSelect } from "../cli/prompt";
 import { connectWithRaw, type SpawnFn } from "../ssh/session";
 import { fieldPrompt, CONNECT_TO_LABEL } from "../cli/field-labels";
@@ -36,7 +36,28 @@ export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[
   return { order, rest, invalid };
 }
 
-export async function runList(order: SortOrder = "asc"): Promise<void> {
+// Every --tags= occurrence accumulates (AND-combined), unlike --sort's
+// last-wins — --tags=a --tags=b is the same filter as --tags=a,b.
+export function parseTagsFlag(argv: string[]): { tags: string[]; rest: string[] } {
+  const tags: string[] = [];
+  const rest: string[] = [];
+
+  for (const arg of argv) {
+    if (!arg.startsWith("--tags=")) {
+      rest.push(arg);
+      continue;
+    }
+    tags.push(...splitTags(arg.slice("--tags=".length)));
+  }
+
+  return { tags, rest };
+}
+
+function noMatchMessage(tags: string[]): string {
+  return `No hosts match tag(s): ${tags.join(", ")}.`;
+}
+
+export async function runList(order: SortOrder = "asc", tags: string[] = []): Promise<void> {
   const { path, password } = await openConfig();
 
   const hosts = parse(loadRaw(path, password));
@@ -55,13 +76,19 @@ export async function runList(order: SortOrder = "asc"): Promise<void> {
     );
   }
 
-  for (const name of sortNames(connectableNames(hosts), order)) {
+  const filtered = filterByTags(hosts, tags);
+  if (filtered.length === 0 && tags.length > 0) {
+    console.error(noMatchMessage(tags));
+    return;
+  }
+
+  for (const name of sortNames(connectableNames(filtered), order)) {
     console.log(name);
   }
 }
 
 // Bare `mssh`: the one password prompt drives both list and connect — no second decrypt.
-export async function runListConnect(order: SortOrder = "asc", spawnFn?: SpawnFn): Promise<void> {
+export async function runListConnect(order: SortOrder = "asc", tags: string[] = [], spawnFn?: SpawnFn): Promise<void> {
   const { path, password } = await openConfig();
 
   const raw = loadRaw(path, password);
@@ -73,6 +100,12 @@ export async function runListConnect(order: SortOrder = "asc", spawnFn?: SpawnFn
     return;
   }
 
-  const selected = await promptSelect<string>(fieldPrompt(CONNECT_TO_LABEL), hostChoices(hosts, order));
+  const filtered = filterByTags(hosts, tags);
+  if (filtered.length === 0 && tags.length > 0) {
+    console.error(noMatchMessage(tags));
+    return;
+  }
+
+  const selected = await promptSelect<string>(fieldPrompt(CONNECT_TO_LABEL), hostChoices(filtered, order));
   connectWithRaw(raw, [selected], password, spawnFn, hosts);
 }

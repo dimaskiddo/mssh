@@ -9,6 +9,7 @@ export const PASSWORD_LABEL = "Password";
 export const PASSWORD_SET_LABEL = "Set Password";
 export const PASSWORD_CONFIRM_LABEL = "Confirm Password";
 export const CONNECT_TO_LABEL = "Connect to";
+export const TAGS_LABEL = "Tags";
 
 export const FIELD_LABELS: Record<ModeledField, string> = {
   hostname: "Hostname / IP",
@@ -27,6 +28,7 @@ export const ALIGNED_LABELS = [
   PASSWORD_SET_LABEL,
   PASSWORD_CONFIRM_LABEL,
   CONNECT_TO_LABEL,
+  TAGS_LABEL,
   ...Object.values(FIELD_LABELS),
 ];
 const FIELD_LABEL_WIDTH = Math.max(...ALIGNED_LABELS.map((l) => l.length)) + 1;

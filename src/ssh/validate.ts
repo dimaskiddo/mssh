@@ -27,3 +27,10 @@ export function isValidPort(value: string): boolean {
   const port = Number(value);
   return port >= 1 && port <= 65535;
 }
+
+// Only the lowercase form is ever stored: splitTags lowercases on the way
+// in, so this also rejects anything that couldn't have come from it. ','
+// would break the join/split delimiter, '#' would break the '## Tags' line.
+export function isValidTag(tag: string): boolean {
+  return /^[a-z0-9._-]+$/.test(tag);
+}

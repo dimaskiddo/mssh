@@ -50,3 +50,30 @@ test("runList warns on stderr about a duplicate alias, and stdout still lists it
     logSpy.mockRestore();
   }
 });
+
+const tagText = "Host web1\n  ## Tags stage\n  HostName 1.2.3.4\n\nHost web2\n  HostName 5.6.7.8\n";
+
+test("runList with a --tags filter lists only the tagged alias", async () => {
+  writeFileSync(configFilePath, seal(tagText, TEST_PASSWORD));
+  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await runList("asc", ["stage"]);
+    expect(logSpy.mock.calls.flat()).toEqual(["web1"]);
+  } finally {
+    logSpy.mockRestore();
+  }
+});
+
+test("runList with a --tags filter matching nothing prints the no-match message to stderr", async () => {
+  writeFileSync(configFilePath, seal(tagText, TEST_PASSWORD));
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  const logSpy = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await runList("asc", ["stage", "prod"]);
+    expect(errorSpy).toHaveBeenCalledWith("No hosts match tag(s): stage, prod.");
+    expect(logSpy).not.toHaveBeenCalled();
+  } finally {
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  }
+});

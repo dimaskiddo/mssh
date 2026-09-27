@@ -13,6 +13,9 @@ import {
   connectableNames,
   duplicateAlias,
   rewriteIdentityFiles,
+  splitTags,
+  filterByTags,
+  setHostTags,
   KEEP_ALIVE_INTERVAL,
   type Host,
 } from "../../src/ssh/host";
@@ -279,4 +282,48 @@ test("rewriteIdentityFiles does not mutate the input hosts array", () => {
   const original: Host[] = [{ names: ["web1"], identityFile: "/k/a.pem", extras: [] }];
   rewriteIdentityFiles(original, new Map([["/k/a.pem", "/tmp/x"]]));
   expect(original[0]?.identityFile).toBe("/k/a.pem");
+});
+
+test("splitTags trims, lowercases, drops empty entries and dedupes while keeping order", () => {
+  expect(splitTags(" Alibaba, stage,,alibaba ")).toEqual(["alibaba", "stage"]);
+});
+
+test("filterByTags returns every host when the filter is empty", () => {
+  const hosts: Host[] = [{ names: ["a"], tags: ["x"], extras: [] }, { names: ["b"], extras: [] }];
+  expect(filterByTags(hosts, [])).toEqual(hosts);
+});
+
+test("filterByTags applies AND semantics across multiple tags", () => {
+  const hosts: Host[] = [
+    { names: ["a"], tags: ["alibaba", "stage"], extras: [] },
+    { names: ["b"], tags: ["alibaba"], extras: [] },
+  ];
+  expect(filterByTags(hosts, ["alibaba", "stage"]).map((h) => h.names[0])).toEqual(["a"]);
+});
+
+test("filterByTags never matches a host with no tags against a non-empty filter", () => {
+  const hosts: Host[] = [{ names: ["a"], extras: [] }];
+  expect(filterByTags(hosts, ["stage"])).toEqual([]);
+});
+
+// filterByTags does not itself normalize its `tags` argument — an
+// unnormalized filter value simply fails to equal any stored (lowercase,
+// validated) tag, so it narrows to nothing rather than widening to everything.
+test("filterByTags matches nothing for an unnormalized filter tag", () => {
+  const hosts: Host[] = [{ names: ["a"], tags: ["stage"], extras: [] }];
+  expect(filterByTags(hosts, ["Not Valid"])).toEqual([]);
+});
+
+test("setHostTags replaces the first matching host's tags without mutating the input array", () => {
+  const hosts: Host[] = [{ names: ["a"], tags: ["old"], extras: [] }];
+  const result = setHostTags(hosts, "a", ["new"]);
+  expect(result).not.toBe(hosts);
+  expect(result[0]?.tags).toEqual(["new"]);
+  expect(hosts[0]?.tags).toEqual(["old"]);
+});
+
+test("setHostTags with an empty array removes the tags key entirely", () => {
+  const hosts: Host[] = [{ names: ["a"], tags: ["old"], extras: [] }];
+  const result = setHostTags(hosts, "a", []);
+  expect(Object.prototype.hasOwnProperty.call(result[0], "tags")).toBe(false);
 });

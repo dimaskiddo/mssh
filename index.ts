@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { runSetup } from "./src/commands/setup";
-import { runList, runListConnect, parseSortFlag } from "./src/commands/list";
+import { runList, runListConnect, parseSortFlag, parseTagsFlag } from "./src/commands/list";
 import { runAdd } from "./src/commands/add";
 import { runEdit } from "./src/commands/edit";
 import { runDelete } from "./src/commands/delete";
@@ -20,10 +20,10 @@ import pkg from "./package.json";
 const USAGE = `MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper
 
 Usage:
-  mssh [--sort=asc|dsc|cfg]             pick a host from the list and connect
+  mssh [--sort=asc|dsc|cfg] [--tags=a,b]  pick a host from the list and connect
   mssh setup                            create the encrypted config and install mssh to PATH
   mssh change-password                  re-encrypt the config under a new password
-  mssh config list [--sort=asc|dsc|cfg]   list host aliases
+  mssh config list [--sort=asc|dsc|cfg] [--tags=a,b]  list host aliases
   mssh config add                         add a host
   mssh config edit [name]                 edit one modeled field on a host
   mssh config delete [name]               delete a host
@@ -123,10 +123,11 @@ async function main(): Promise<void> {
     const [sub, ...subRest] = rest;
 
     if (sub === "list") {
-      const { order, rest: extra, invalid } = parseSortFlag(subRest);
+      const { order, rest: sorted, invalid } = parseSortFlag(subRest);
+      const { tags, rest: extra } = parseTagsFlag(sorted);
       rejectExtraArgs(extra);
       warnInvalidSort(invalid);
-      await runList(order);
+      await runList(order, tags);
       return;
     }
 
@@ -159,9 +160,10 @@ async function main(): Promise<void> {
 
   const argv = process.argv.slice(2);
   const bare = parseSortFlag(argv);
-  if (bare.rest.length === 0) {
+  const tagged = parseTagsFlag(bare.rest);
+  if (tagged.rest.length === 0) {
     warnInvalidSort(bare.invalid);
-    await runListConnect(bare.order);
+    await runListConnect(bare.order, tagged.tags);
     return;
   }
 

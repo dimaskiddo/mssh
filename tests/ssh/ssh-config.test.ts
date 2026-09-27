@@ -473,3 +473,63 @@ test("parse stays permissive: it returns both blocks for a duplicate-alias confi
   const dup = parse("Host web1\n  HostName first.example\n\nHost web1\n  HostName second.example\n");
   expect(dup).toHaveLength(2);
 });
+
+test("## Tags is parsed into a lowercased tags array", () => {
+  const text = "Host web1\n  ## Tags Alibaba,STAGE\n  HostName 1.2.3.4\n";
+  const hosts = parse(text);
+  expect(hosts[0]?.tags).toEqual(["alibaba", "stage"]);
+});
+
+test("a host with tags round-trips through parse(serialize(h))", () => {
+  const hosts: Host[] = [{ names: ["web1"], tags: ["alibaba", "stage"], extras: [] }];
+  expect(parse(serialize(hosts))).toEqual(hosts);
+});
+
+test("serialize emits the tags line directly after the Host line", () => {
+  const hosts: Host[] = [{ names: ["web1"], tags: ["alibaba"], hostname: "1.2.3.4", extras: [] }];
+  const text = serialize(hosts);
+  expect(text.split("\n").slice(0, 2)).toEqual(["Host web1", "  ## Tags alibaba"]);
+});
+
+test("the first ## Tags line wins over a repeated one", () => {
+  const text = "Host web1\n  ## Tags alibaba\n  ## Tags stage\n  HostName 1.2.3.4\n";
+  expect(parse(text)[0]?.tags).toEqual(["alibaba"]);
+});
+
+test("invalid pieces of a ## Tags line are dropped on parse", () => {
+  const text = "Host web1\n  ## Tags alibaba,Not Valid,stage\n  HostName 1.2.3.4\n";
+  expect(parse(text)[0]?.tags).toEqual(["alibaba", "stage"]);
+});
+
+test("a ## Tags line before the first Host is dropped, not attached to a later one", () => {
+  const text = "## Tags alibaba\nHost web1\n  HostName 1.2.3.4\n";
+  expect(parse(text)[0]?.tags).toBeUndefined();
+});
+
+test("a ## Tags line after Match is dropped, not attached to the preceding host", () => {
+  const text = "Host web1\n  HostName 1.2.3.4\n\nMatch host foo\n  ## Tags alibaba\n";
+  expect(parse(text)[0]?.tags).toBeUndefined();
+});
+
+test("a plain # comment inside a host block is still dropped, tags or not", () => {
+  const text = "Host web1\n  # just a comment\n  HostName 1.2.3.4\n";
+  expect(parse(text)[0]?.tags).toBeUndefined();
+  expect(parse(text)[0]?.hostname).toBe("1.2.3.4");
+});
+
+test("serialize throws on a tag containing a newline", () => {
+  const hosts: Host[] = [{ names: ["web1"], tags: ["a\nb"], extras: [] }];
+  expect(() => serialize(hosts)).toThrow(/invalid tag/);
+});
+
+test("a host with no tags serializes exactly as it does today", () => {
+  const hosts: Host[] = [{ names: ["web1"], hostname: "1.2.3.4", extras: [] }];
+  expect(serialize(hosts)).toBe("Host web1\n  HostName 1.2.3.4\n");
+});
+
+test("an old-format config with no ## Tags line parses with no tags key, and re-serializing is byte-stable", () => {
+  const text = "Host web1\n  HostName 1.2.3.4\n";
+  const hosts = parse(text);
+  expect(Object.prototype.hasOwnProperty.call(hosts[0], "tags")).toBe(false);
+  expect(serialize(parse(text))).toBe(text);
+});

@@ -113,6 +113,10 @@ const NO_CONFIG_CASES: Array<[string, string[]]> = [
   ["config migrate-keys", ["config", "migrate-keys"]],
   ["connect to a host", ["somehost"]],
   ["change-password", ["change-password"]],
+  ["bare mssh with --tags", ["--tags=x"]],
+  ["bare mssh with singular --tag (not recognized)", ["--tag=x"]],
+  ["config list with --tags", ["config", "list", "--tags=x"]],
+  ["host with --tags reaches connect", ["somehost", "--tags=x"]],
 ];
 
 for (const [label, args] of NO_CONFIG_CASES) {
@@ -138,6 +142,14 @@ test("mssh <host> --sort=asc reaches the connect path, not the listing", () => {
   expect(result.signal).toBeNull();
   expect(result.status).toBe(1);
   expect(result.stderr).not.toContain("--sort");
+  expect(result.stderr).toContain("Run 'mssh setup'");
+});
+
+test("mssh somehost --tags=x reaches the connect path, not the listing", () => {
+  const result = runCli(["somehost", "--tags=x"], { HOME: emptyHome() });
+  expect(result.signal).toBeNull();
+  expect(result.status).toBe(1);
+  expect(result.stderr).not.toContain("No hosts match tag");
   expect(result.stderr).toContain("Run 'mssh setup'");
 });
 

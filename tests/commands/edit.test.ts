@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { findHost, type Host, type ModeledField } from "../../src/ssh/host";
-import { FIELD_LABELS } from "../../src/cli/field-labels";
-import { FIELD_CHOICES, validateFieldValue } from "../../src/commands/edit";
+import { FIELD_LABELS, TAGS_LABEL } from "../../src/cli/field-labels";
+import { FIELD_CHOICES, validateFieldValue, validateTags, tagsDefault } from "../../src/commands/edit";
 
 function host(overrides: Partial<Host>): Host {
   return { names: ["web1"], extras: [], ...overrides };
@@ -39,10 +39,31 @@ test("validateFieldValue rejects a newline for both port and non-port fields", (
   expect(validateFieldValue("user", "bob\nrest")).toBe("Username cannot contain a newline.");
 });
 
-test("FIELD_CHOICES exposes every ModeledField with its shared label as the display name", () => {
+test("FIELD_CHOICES exposes every ModeledField with its shared label as the display name, plus Tags", () => {
   const fields: ModeledField[] = ["hostname", "port", "user", "identityFile", "proxyJump"];
-  expect(FIELD_CHOICES.map((c) => c.value)).toEqual(fields);
-  for (const choice of FIELD_CHOICES) {
+  const modeled = FIELD_CHOICES.filter((c): c is { name: string; value: ModeledField } => c.value !== "tags");
+  expect(modeled.map((c) => c.value)).toEqual(fields);
+  for (const choice of modeled) {
     expect(choice.name).toBe(FIELD_LABELS[choice.value]);
   }
+  expect(FIELD_CHOICES.at(-1)).toEqual({ name: TAGS_LABEL, value: "tags" });
+});
+
+test("validateTags accepts a comma-separated list of valid tags, including empty", () => {
+  expect(validateTags("")).toBe(true);
+  expect(validateTags("alibaba,stage")).toBe(true);
+});
+
+test("validateTags rejects a piece that fails isValidTag", () => {
+  expect(validateTags("alibaba,Not Valid")).toBe(
+    "Tags may only contain letters, digits, '.', '_' or '-', separated by commas.",
+  );
+});
+
+test("tagsDefault gives an empty string for a host with no tags (an old-format config)", () => {
+  expect(tagsDefault(host({}))).toBe("");
+});
+
+test("tagsDefault joins an existing host's tags with commas", () => {
+  expect(tagsDefault(host({ tags: ["a", "b"] }))).toBe("a,b");
 });

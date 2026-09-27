@@ -33,7 +33,7 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **Paths** | `src/config/paths.ts` — `homeDir`/`msshRootDir`/`runDir`/`keysDir`/`defaultEncConfigPath`/`expandHome` |
 | **Password** | `src/config/password.ts` — `resolvePassword(envPassword?)`, the single place the auth-prompt split lives; `takeEnvPassword(env)` reads and deletes `MSSH_PASSWORD` from a process env object. `promptNewPassword()` is the set-password + confirm + match check shared by `setup`/`change-password` |
 | **Legacy** | `src/config/legacy.ts` — one-time migration from a pre-`~/.mssh` config location |
-| **SSHConfig** | `src/ssh/ssh-config.ts` — `parse`/`serialize`. Directive guards live in `ssh/directives.ts` (`REFUSED_DIRECTIVES`, `normalizeDirectiveKey`), tokenizing in `ssh/tokens.ts`, field validation in `ssh/validate.ts`, and pure `Host` mutations (`addHost`, `updateHostField`, `deleteHost`, `hostsWithoutProxyJump`, `emptyToUndefined`, `findHost`) in `ssh/host.ts`. `extras[]` preserves unmodeled directives across an edit round-trip |
+| **SSHConfig** | `src/ssh/ssh-config.ts` — `parse`/`serialize`. Directive guards live in `ssh/directives.ts` (`REFUSED_DIRECTIVES`, `normalizeDirectiveKey`), tokenizing in `ssh/tokens.ts`, field validation in `ssh/validate.ts`, and pure `Host` mutations (`addHost`, `updateHostField`, `deleteHost`, `hostsWithoutProxyJump`, `emptyToUndefined`, `findHost`, `splitTags`, `filterByTags`, `setHostTags`) in `ssh/host.ts`. `extras[]` preserves unmodeled directives across an edit round-trip. `## Tags a,b` is the one comment `parse`/`serialize` model — an inert ssh comment holding a host's tags, guarded in `assertSerializable` the same way modeled fields are |
 | **Argv / Session** | `src/ssh/argv.ts` — `rejectedFlags`/`firstPositional`, the ssh-flag guard. `src/ssh/session.ts` — `connectWithRaw` + the ProxyJump/temp-file lifetime rationale |
 | **SSHBinary** | `src/ssh/ssh-binary.ts` — `resolveSsh`/`requireSsh`, resolves `ssh` to an absolute path, per-OS install guidance |
 | **KeyStore** | `src/keyring/key-store.ts` — lifecycle of pulled keys: `materializeKeys` decrypts to `run/key-*` for a connection's lifetime, `migratePlaintextKeys` seals any key an older mssh version left plaintext (crash-safe, idempotent, also finishes an interrupted `change-password` re-key) |
@@ -50,9 +50,9 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 ## CLI
 
 ```
-mssh                                # list hosts
+mssh [--tags=a,b]                   # list hosts
 mssh setup                          # create the encrypted config
-mssh config list                    # list hosts
+mssh config list [--tags=a,b]       # list hosts
 mssh config add                     # add a host, optional ProxyJump, optional remote key fetch
 mssh config edit [name]             # edit one modeled field
 mssh config delete [name]           # delete a host, warns about dependents

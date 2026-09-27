@@ -5,15 +5,15 @@ import { keysDir } from "../config/paths";
 import { discoverDefaultKeyPath } from "../keyring/local-keys";
 import { loadHosts, saveHosts } from "../core/store";
 import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
-import { addHost, hostsWithoutProxyJump, emptyToUndefined, hostHasName, findHost, type Host } from "../ssh/host";
+import { addHost, hostsWithoutProxyJump, emptyToUndefined, hostHasName, findHost, splitTags, type Host } from "../ssh/host";
 import { isValidNewHostName } from "../ssh/validate";
 import { promptInput, promptSelect, promptConfirm } from "../cli/prompt";
-import { FIELD_LABELS, HOST_ALIAS_LABEL, fieldPrompt } from "../cli/field-labels";
+import { FIELD_LABELS, HOST_ALIAS_LABEL, TAGS_LABEL, fieldPrompt } from "../cli/field-labels";
 import { hostChoices } from "../cli/pick-host";
 import { openConfig } from "../core/require-config";
 import { fatal } from "../core/exit";
 import { extractJumpHostKey } from "../keyring/jump-key-pull";
-import { validateFieldValue } from "./edit";
+import { validateFieldValue, validateTags } from "./edit";
 
 // Names index.ts dispatches on before reaching runConnect — a host with one
 // of these would be silently unreachable via `mssh <name>`.
@@ -37,6 +37,7 @@ type NewHostFields = {
   user: string;
   identityFile: string;
   proxyJump: string | undefined;
+  tags?: string[];
 };
 
 export function buildNewHost(fields: NewHostFields): Host {
@@ -47,6 +48,7 @@ export function buildNewHost(fields: NewHostFields): Host {
     user: emptyToUndefined(fields.user),
     identityFile: emptyToUndefined(fields.identityFile),
     proxyJump: fields.proxyJump,
+    ...(fields.tags !== undefined && fields.tags.length > 0 ? { tags: fields.tags } : {}),
     extras: [],
   };
 }
@@ -93,6 +95,13 @@ export async function runAdd(): Promise<void> {
     })
   ).trim();
 
+  const tags = splitTags(
+    await promptInput(fieldPrompt(TAGS_LABEL), {
+      default: "",
+      validate: validateTags,
+    }),
+  );
+
   let jumpSelection: { host: Host; pattern: string } | undefined;
 
   const needsJumpHost = await promptConfirm(`Does this host require a ${FIELD_LABELS.proxyJump}?`, {
@@ -133,7 +142,7 @@ export async function runAdd(): Promise<void> {
     ).trim();
   }
 
-  const newHost = buildNewHost({ name, hostname, port, user, identityFile, proxyJump: jumpSelection?.pattern });
+  const newHost = buildNewHost({ name, hostname, port, user, identityFile, proxyJump: jumpSelection?.pattern, tags });
 
   const updatedHosts = addHost(existingHosts, newHost);
   try {
