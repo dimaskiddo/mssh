@@ -1,6 +1,4 @@
 #!/usr/bin/env bun
-// Entry point: `setup`/`config` are recognized only as the literal first arg;
-// bare `mssh` lists hosts; everything else passes through to connect.
 import { runSetup } from "./src/commands/setup";
 import { runList, runListConnect, parseSortFlag } from "./src/commands/list";
 import { runAdd } from "./src/commands/add";
@@ -10,20 +8,12 @@ import { runMigrateKeys } from "./src/commands/migrate-keys";
 import { runConnect } from "./src/commands/connect";
 import { runChangePassword } from "./src/commands/change-password";
 import { runUpdate } from "./src/commands/update";
-import {
-  configPath,
-  defaultEncConfigPath,
-  keysDir,
-  legacyEncConfigPath,
-  loadSettings,
-  migrateLegacyConfigFrom,
-  runDir,
-  toDisplayPath,
-  type Settings,
-} from "./src/app-config";
-import { sweepOrphanedTempFiles, sweepBinaryLeftovers, isCompiledBinary } from "./src/sweep";
-import { fatal } from "./src/exit";
-import { dirname } from "node:path";
+import { configPath, loadSettings, type Settings } from "./src/config/settings";
+import { defaultEncConfigPath, keysDir, runDir, toDisplayPath } from "./src/config/paths";
+import { legacyEncConfigPath, migrateLegacyConfigFrom } from "./src/config/legacy";
+import { sweepOrphanedTempFiles, sweepBinaryLeftovers } from "./src/fs/sweep";
+import { isCompiledBinary } from "./src/core/platform";
+import { fatal } from "./src/core/exit";
 import pkg from "./package.json";
 
 const USAGE = `MSSH (Manager/Masked SSH) - An Encrypted SSH Config Wrapper
@@ -42,7 +32,7 @@ Usage:
   mssh version, --version               show the version
   mssh --help, -h                       show this help`;
 
-// ssh_config.enc -> config rename shim; stderr so it doesn't pollute `config list`'s output.
+// stderr so this doesn't pollute `config list`'s output.
 function migrateLegacyConfig(settings: Settings): void {
   if (settings.MSSH_CONFIG_PATH !== undefined) return;
 
@@ -53,7 +43,7 @@ function migrateLegacyConfig(settings: Settings): void {
 }
 
 function sweepTempFiles(settings: Settings): void {
-  sweepOrphanedTempFiles(runDir(), dirname(configPath(settings)), keysDir());
+  sweepOrphanedTempFiles(runDir(), configPath(settings), keysDir());
 }
 
 // Silent trailing args (`mssh setup anything`) look like they configured

@@ -1,44 +1,23 @@
-// `mssh config add`: prompts for a new host, with two gates — needs a jump
-// host? and if so, pull a key from it (ProxyJump reads the key locally, not
-// on the bastion)? requireSsh() runs only inside that opt-in key-pull branch.
-import { existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+// ProxyJump reads the key locally, not on the bastion; requireSsh() runs only
+// inside that opt-in key-pull branch.
 import { userInfo } from "node:os";
-import { configPath, keysDir, loadSettings, resolvePassword, runDir } from "../app-config";
-import { discoverDefaultKeyPath, listPulledKeys } from "../local-keys";
-import { loadHosts, saveHosts } from "../store";
-import { materializeKeys, migratePlaintextKeys, reportMigratedKeys } from "../key-store";
-import {
-  addHost,
-  hostsWithoutProxyJump,
-  emptyToUndefined,
-  serialize,
-  isValidFieldValue,
-  isValidNewHostName,
-  isValidPort,
-  hostHasName,
-  connectableNames,
-  type Host,
-} from "../ssh-config";
-import { promptInput, promptSelect, promptConfirm } from "../prompt";
-import { requireSsh } from "../ssh-binary";
-import { ensureSecureDir, writeSecure } from "../secure-file";
-import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "../remote-keys";
-import { tempConfigName } from "./connect";
-import { FIELD_LABELS, HOST_ALIAS_LABEL, KEY_PULL_LABEL, fieldPrompt } from "../field-labels";
-import { requireExistingConfig } from "./require-config";
-import { fatal } from "../exit";
+import { keysDir } from "../config/paths";
+import { discoverDefaultKeyPath } from "../keyring/local-keys";
+import { loadHosts, saveHosts } from "../core/store";
+import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
+import { addHost, hostsWithoutProxyJump, emptyToUndefined, hostHasName, findHost, type Host } from "../ssh/host";
+import { isValidNewHostName } from "../ssh/validate";
+import { promptInput, promptSelect, promptConfirm } from "../cli/prompt";
+import { FIELD_LABELS, HOST_ALIAS_LABEL, fieldPrompt } from "../cli/field-labels";
+import { hostChoices } from "../cli/pick-host";
+import { openConfig } from "../core/require-config";
+import { fatal } from "../core/exit";
+import { extractJumpHostKey } from "../keyring/jump-key-pull";
+import { validateFieldValue } from "./edit";
 
 // Names index.ts dispatches on before reaching runConnect — a host with one
 // of these would be silently unreachable via `mssh <name>`.
 const RESERVED_HOST_NAMES = new Set(["setup", "config", "version", "change-password", "update", "-h", "--help", "--version"]);
-
-// A hung remote in listRemoteKeys/downloadRemoteKey would otherwise block in
-// this sync syscall indefinitely — spawnSync itself doesn't process signals
-// while blocked, so SIGINT can't interrupt it either.
-const REMOTE_COMMAND_TIMEOUT_MS = 15_000;
 
 // userInfo() throws when the running uid has no passwd entry (common in
 // containers) — exactly the situation where a usable fallback matters most.
@@ -72,176 +51,6 @@ export function buildNewHost(fields: NewHostFields): Host {
   };
 }
 
-export function tempConfigRunner(tempConfigPath: string, sshPath: string): RemoteRunner {
-  return (sshTarget, remoteArgv) => {
-    const result = spawnSync(sshPath, ["-F", tempConfigPath, sshTarget, ...remoteArgv], {
-      encoding: "buffer",
-      timeout: REMOTE_COMMAND_TIMEOUT_MS,
-    });
-    return {
-      status: result.status,
-      stdout: result.stdout ?? Buffer.alloc(0),
-      stderr: result.stderr ? result.stderr.toString("utf8").trim() : "",
-      error: result.error,
-    };
-  };
-}
-
-// accept-new records an unknown bastion key instead of asking a question that
-// a piped `ls`/`cat` could never answer. Scoped to this one argv, never the
-// temp config, so downloadRemoteKey's cat still runs under strict checking.
-export function preflightArgv(tempConfigPath: string, jumpAlias: string): string[] {
-  return ["-F", tempConfigPath, "-o", "StrictHostKeyChecking=accept-new", jumpAlias, "true"];
-}
-
-// "-F none" is OpenSSH's own "read no config files" switch — without it ssh
-// falls back to parsing the user's real ~/.ssh/config for this teardown call,
-// which may carry directives (e.g. Match exec) mssh never agreed to run.
-export function controlExitArgv(controlPath: string, jumpAlias: string): string[] {
-  return ["-F", "none", "-S", controlPath, "-O", "exit", jumpAlias];
-}
-
-// Reaches the jump host directly and offers to pull a private key from its
-// ~/.ssh into keysDir(). ProxyJump authenticates with a key read LOCALLY,
-// which is why it must be fetched off the bastion first, not used from there.
-// Runs before requireSsh() and the interactive handshake: a second host behind
-// the same bastion should not cost a second password/MFA round trip just to
-// rediscover a key that is already in keysDir().
-async function reuseExistingKey(jumpAlias: string): Promise<string | undefined> {
-  const existing = listPulledKeys(jumpAlias);
-  if (existing.length === 0) return undefined;
-
-  if (existing.length === 1) {
-    const only = existing[0] as string;
-    const reuse = await promptConfirm(`A key from ${jumpAlias} was already pulled to ${only}. Use it?`, {
-      default: true,
-    });
-    return reuse ? only : undefined;
-  }
-
-  return await promptSelect<string | undefined>(fieldPrompt(KEY_PULL_LABEL), [
-    ...existing.map((p) => ({ name: p, value: p as string | undefined })),
-    { name: "(pull a new key from the jump host)", value: undefined },
-  ]);
-}
-
-async function extractJumpHostKey(jumpHost: Host, jumpAlias: string, password: string): Promise<string | undefined> {
-  const reused = await reuseExistingKey(jumpAlias);
-  if (reused !== undefined) return reused;
-
-  const sshPath = requireSsh();
-
-  ensureSecureDir(runDir());
-  const tmpPath = join(runDir(), tempConfigName(process.pid, randomBytes(8).toString("hex")));
-  // Shared control connection avoids re-running the full auth handshake (and MFA) twice.
-  const controlPath = join(runDir(), `cm-${randomBytes(8).toString("hex")}`);
-  const runner = tempConfigRunner(tmpPath, sshPath);
-  const keyTempPaths: string[] = [];
-
-  // Safety net for a signal arriving mid-prompt, which would skip the finally block below (mirrors connect.ts).
-  let cleaned = false;
-  const cleanup = (): void => {
-    if (cleaned) return;
-    cleaned = true;
-    try {
-      spawnSync(sshPath, controlExitArgv(controlPath, jumpAlias), { timeout: REMOTE_COMMAND_TIMEOUT_MS });
-    } catch {
-      // best-effort
-    }
-    try {
-      if (existsSync(tmpPath)) unlinkSync(tmpPath);
-    } catch {
-      // best-effort
-    }
-    for (const keyTempPath of keyTempPaths) {
-      try {
-        if (existsSync(keyTempPath)) unlinkSync(keyTempPath);
-      } catch {
-        // best-effort
-      }
-    }
-  };
-  process.on("exit", cleanup);
-
-  try {
-    // The bastion's own IdentityFile may itself be a sealed pulled key —
-    // materialize it before ssh ever tries to read it for this handshake.
-    const [materializedJumpHost] = materializeKeys([jumpHost], password, keysDir(), runDir(), keyTempPaths);
-    const hostForTemp: Host = {
-      ...(materializedJumpHost ?? jumpHost),
-      extras: [
-        ...jumpHost.extras,
-        { key: "ControlMaster", value: "auto" },
-        { key: "ControlPath", value: `"${controlPath}"` },
-        { key: "ControlPersist", value: "300" },
-      ],
-    };
-    writeSecure(tmpPath, serialize([hostForTemp]), undefined, "wx");
-
-    // Interactive and unbounded: the user answers ssh's host-key, password and
-    // MFA prompts here, so the piped ls/cat below inherit a live ControlMaster
-    // socket and never need a terminal of their own.
-    console.log(`Connecting to ${jumpAlias} to look for keys...`);
-    const handshake = spawnSync(sshPath, preflightArgv(tmpPath, jumpAlias), { stdio: "inherit" });
-    if (handshake.error) {
-      throw new Error(`failed to run ssh for ${jumpAlias}: ${handshake.error.message}`);
-    }
-    if (handshake.status !== 0) {
-      throw new Error(
-        `could not open a connection to ${jumpAlias} (ssh exited ${handshake.status}). ` +
-          `Check the ${FIELD_LABELS.proxyJump}'s hostname, user and identity file with 'mssh config edit ${jumpAlias}'.`,
-      );
-    }
-
-    // Authenticated: the ControlPersist master keeps the bastion's own key
-    // from ever being needed again for this handshake's ls/cat calls, so the
-    // decrypted jump-host key needn't sit in run/ for the rest of this flow.
-    for (const keyTempPath of keyTempPaths) {
-      try {
-        if (existsSync(keyTempPath)) unlinkSync(keyTempPath);
-      } catch {
-        // best-effort; cleanup() below is the fallback
-      }
-    }
-    keyTempPaths.length = 0;
-
-    const keys = listRemoteKeys(jumpAlias, runner);
-    if (keys.length === 0) {
-      console.log(
-        `No private keys found in ${jumpAlias}:~/.ssh ` +
-          `(public keys, authorized_keys, config and known_hosts are not offered).`,
-      );
-      return undefined;
-    }
-
-    const selected = await promptSelect<string | undefined>(fieldPrompt(KEY_PULL_LABEL), [
-      { name: "(skip)", value: undefined },
-      ...keys.map((k) => ({ name: k, value: k })),
-    ]);
-    if (selected === undefined) return undefined;
-
-    const localName = localKeyName(jumpAlias, selected);
-    ensureSecureDir(keysDir());
-    const localPath = join(keysDir(), localName);
-
-    if (existsSync(localPath)) {
-      const overwrite = await promptConfirm(`${localPath} already exists. Overwrite?`, { default: false });
-      // Declining means "keep what's there" — that file is this bastion's key,
-      // so hand it back rather than dropping through to a manual path prompt.
-      if (!overwrite) return localPath;
-    }
-
-    downloadRemoteKey(jumpAlias, selected, localPath, runner, password);
-
-    return localPath;
-  } finally {
-    cleanup();
-  }
-}
-
-// Extracted so RESERVED_HOST_NAMES, the duplicate-name check, and the
-// character-class rule are covered directly by tests without spawning
-// runAdd's fs/crypto/terminal dependencies.
 export function validateNewAlias(value: string, existingHosts: Host[]): true | string {
   if (!isValidNewHostName(value)) {
     return "Use letters, digits, dot, dash or underscore only.";
@@ -256,11 +65,8 @@ export function validateNewAlias(value: string, existingHosts: Host[]): true | s
 }
 
 export async function runAdd(): Promise<void> {
-  const loaded = loadSettings();
+  const { loaded, path, password } = await openConfig({ forcePrompt: false });
   const { settings } = loaded;
-  const path = configPath(settings);
-  requireExistingConfig(path);
-  const password = await resolvePassword(loaded, { forcePrompt: false });
 
   const existingHosts = loadHosts(path, password);
   reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
@@ -271,21 +77,22 @@ export async function runAdd(): Promise<void> {
 
   const hostname = (
     await promptInput(fieldPrompt(FIELD_LABELS.hostname), {
-      validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.hostname} cannot contain a newline.`),
+      validate: (value) => validateFieldValue("hostname", value),
     })
   ).trim();
-  const port = await promptInput(fieldPrompt(FIELD_LABELS.port), {
-    default: "22",
-    validate: (value) => (value === "" || isValidPort(value) ? true : "Port must be a number between 1 and 65535."),
-  });
+  const port = (
+    await promptInput(fieldPrompt(FIELD_LABELS.port), {
+      default: "22",
+      validate: (value) => validateFieldValue("port", value),
+    })
+  ).trim();
   const user = (
     await promptInput(fieldPrompt(FIELD_LABELS.user), {
       default: defaultUsername(),
-      validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.user} cannot contain a newline.`),
+      validate: (value) => validateFieldValue("user", value),
     })
   ).trim();
 
-  // Threads the chosen host and picked pattern through to extractJumpHostKey and the new host's ProxyJump.
   let jumpSelection: { host: Host; pattern: string } | undefined;
 
   const needsJumpHost = await promptConfirm(`Does this host require a ${FIELD_LABELS.proxyJump}?`, {
@@ -293,17 +100,14 @@ export async function runAdd(): Promise<void> {
   });
   if (needsJumpHost) {
     const eligibleJumpHosts = hostsWithoutProxyJump(existingHosts);
-    const eligiblePatterns = connectableNames(eligibleJumpHosts);
-    if (eligiblePatterns.length === 0) {
+    const choices = hostChoices(eligibleJumpHosts);
+    if (choices.length === 0) {
       fatal(`No eligible ${FIELD_LABELS.proxyJump} exists yet: a jump host must itself have no ProxyJump. Add one first, then re-run 'mssh config add'.`);
     }
 
-    const pattern = await promptSelect<string>(
-      fieldPrompt(FIELD_LABELS.proxyJump),
-      eligiblePatterns.map((n) => ({ name: n, value: n })),
-    );
-    // Same independent-matching-rules guard as edit.ts's picker — graver here since this is sealed to disk.
-    const host = eligibleJumpHosts.find((h) => hostHasName(h, pattern));
+    const pattern = await promptSelect<string>(fieldPrompt(FIELD_LABELS.proxyJump), choices);
+    // Same guard as pick-host.ts's pickHost; graver here since the result is sealed to disk.
+    const host = findHost(eligibleJumpHosts, pattern);
     if (host !== undefined) jumpSelection = { host, pattern };
   }
 
@@ -324,7 +128,7 @@ export async function runAdd(): Promise<void> {
     identityFile = (
       await promptInput(fieldPrompt(FIELD_LABELS.identityFile), {
         default: settings.DEFAULT_SSH_KEY_PATH ?? discoverDefaultKeyPath(),
-        validate: (value) => (isValidFieldValue(value) ? true : `${FIELD_LABELS.identityFile} cannot contain a newline.`),
+        validate: (value) => validateFieldValue("identityFile", value),
       })
     ).trim();
   }

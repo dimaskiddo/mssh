@@ -2,14 +2,13 @@ import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSyn
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { archiveName, binaryName } from "../src/release-assets";
+import { archiveName, binaryName, CHECKSUM_FILENAME, checksumLine, stripV } from "../src/release/release-assets";
 
 const STAGING_DIR = join("dist", "staging");
 const DIST_DIR = "dist";
 
-// Runs to completion with output streamed live (build/zip progress is for a
-// human watching the release run) and exits the whole script on failure —
-// there's no sound way to continue a release after a build step fails.
+// Streams output live for a human watching the release run, and exits on
+// failure — no sound way to continue a release after a build step fails.
 function runOrExit(argv: string[]): void {
   const [cmd, ...args] = argv;
   if (!cmd) throw new Error("release: empty command");
@@ -102,7 +101,7 @@ for (const file of filesToBundle) {
   }
 }
 
-const version = gitTag.startsWith("v") ? gitTag.slice(1) : gitTag;
+const version = stripV(gitTag);
 
 const targets = [
   { binary: "mssh-linux-64-bit", platform: "linux", arch: "x64" },
@@ -132,8 +131,8 @@ for (const target of targets) {
   }
 
   const archiveOutPath = join(DIST_DIR, target.archive);
-  // Explicit file list, not a shell glob: works identically with an argv
-  // array and spawnSync, and is exact about what's bundled.
+  // Explicit file list, not a shell glob — exact about what's bundled, and
+  // works with spawnSync's argv array.
   const stagedFiles = [target.binName, ...filesToBundle].map((f) => join(platformStaging, f));
 
   const zipResult = spawnSync("zip", ["-q", "-j", archiveOutPath, ...stagedFiles], { stdio: "inherit" });
@@ -164,10 +163,10 @@ for (const archive of archivesCreated) {
   const archivePath = join(DIST_DIR, archive);
   const fileBuffer = readFileSync(archivePath);
   const hash = createHash("sha256").update(fileBuffer).digest("hex");
-  checksumContent += `${hash}  ${archive}\n`;
+  checksumContent += checksumLine(hash, archive);
 }
 
-const checksumFile = join(DIST_DIR, "checksum.txt");
+const checksumFile = join(DIST_DIR, CHECKSUM_FILENAME);
 writeFileSync(checksumFile, checksumContent);
 console.log(`✅ Generated checksums file: ${checksumFile}`);
 
@@ -232,7 +231,7 @@ try {
 
   const assets = [
     ...archivesCreated.map((a) => ({ name: a, path: join(DIST_DIR, a) })),
-    { name: "checksum.txt", path: checksumFile },
+    { name: CHECKSUM_FILENAME, path: checksumFile },
   ];
 
   for (const asset of assets) {

@@ -1,18 +1,12 @@
-// `mssh config migrate-keys`: pure-local-crypto, same exemption as
-// list/edit/delete — verifies the password by decrypting the config, then
-// seals any pulled key in keysDir still left over from an older mssh
-// version. Every other command already does this automatically; this one
-// exists so a user can run it explicitly and see the result.
-import { configPath, keysDir, loadSettings, resolvePassword } from "../app-config";
-import { loadRaw } from "../store";
-import { migratePlaintextKeys } from "../key-store";
-import { requireExistingConfig } from "./require-config";
+// Every other command already does this automatically; this one exists so a
+// user can run it explicitly and see the result.
+import { keysDir } from "../config/paths";
+import { loadRaw } from "../core/store";
+import { migratePlaintextKeys } from "../keyring/key-store";
+import { openConfig } from "../core/require-config";
 
 export async function runMigrateKeys(): Promise<void> {
-  const loaded = loadSettings();
-  const path = configPath(loaded.settings);
-  requireExistingConfig(path);
-  const password = await resolvePassword(loaded, { forcePrompt: false });
+  const { path, password } = await openConfig({ forcePrompt: false });
 
   loadRaw(path, password); // verifies the password before it's used to seal keys
 

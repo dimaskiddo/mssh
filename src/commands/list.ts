@@ -1,32 +1,18 @@
-// `mssh config list`: prints host aliases only, never hostname/user/port —
-// this tool exists to keep those encrypted at rest, out of terminal scrollback.
-// `mssh` (bare) is the same list as a picker that connects — see runListConnect.
-import { configPath, keysDir, loadSettings, resolvePassword } from "../app-config";
-import { loadRaw } from "../store";
-import { migratePlaintextKeys, reportMigratedKeys } from "../key-store";
-import { parse, connectableNames, duplicateAlias, type Host } from "../ssh-config";
-import { promptSelect } from "../prompt";
-import { connectWithRaw, type SpawnFn } from "./connect";
-import { fieldPrompt, CONNECT_TO_LABEL } from "../field-labels";
-import { requireExistingConfig } from "./require-config";
-
-const NO_HOSTS_MESSAGE = "No hosts configured. Add one with 'mssh config add'.";
-
-export type SortOrder = "asc" | "dsc" | "cfg";
+// Prints aliases only, never hostname/user/port — keeps those encrypted at
+// rest, out of terminal scrollback.
+import { keysDir } from "../config/paths";
+import { loadRaw } from "../core/store";
+import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
+import { parse } from "../ssh/ssh-config";
+import { connectableNames, duplicateAlias } from "../ssh/host";
+import { promptSelect } from "../cli/prompt";
+import { connectWithRaw, type SpawnFn } from "../ssh/session";
+import { fieldPrompt, CONNECT_TO_LABEL } from "../cli/field-labels";
+import { openConfig } from "../core/require-config";
+import { hostChoices, sortNames, NO_HOSTS_MESSAGE, type SortOrder } from "../cli/pick-host";
 
 const SORT_ORDERS = new Set<string>(["asc", "dsc", "cfg"]);
 
-// Case-sensitive ASCII (bare .sort() is UTF-16 code-unit order) so results
-// are stable across platforms and locales. Copies first — .sort() mutates.
-export function sortNames(names: string[], order: SortOrder): string[] {
-  if (order === "cfg") return names;
-  const sorted = [...names].sort();
-  return order === "dsc" ? sorted.reverse() : sorted;
-}
-
-// Splits mssh's own --sort= out of argv, leaving the rest for the caller's
-// own argument handling. Last flag wins; an invalid value is reported
-// instead of thrown, so the caller can warn and still list.
 export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[]; invalid?: string } {
   let order: SortOrder = "asc";
   let invalid: string | undefined;
@@ -50,18 +36,8 @@ export function parseSortFlag(argv: string[]): { order: SortOrder; rest: string[
   return { order, rest, invalid };
 }
 
-// One entry per pattern (a "Host a b" block is two picks), filtered through
-// connectableNames so a glob or negation pattern is never itself pickable.
-// Default "cfg" so every other connectableNames-based picker keeps config order.
-export function hostChoices(hosts: Host[], order: SortOrder = "cfg"): Array<{ name: string; value: string }> {
-  return sortNames(connectableNames(hosts), order).map((name) => ({ name, value: name }));
-}
-
 export async function runList(order: SortOrder = "asc"): Promise<void> {
-  const loaded = loadSettings();
-  const path = configPath(loaded.settings);
-  requireExistingConfig(path);
-  const password = await resolvePassword(loaded, { forcePrompt: true });
+  const { path, password } = await openConfig({ forcePrompt: true });
 
   const hosts = parse(loadRaw(path, password));
   reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
@@ -84,14 +60,9 @@ export async function runList(order: SortOrder = "asc"): Promise<void> {
   }
 }
 
-// Bare `mssh`: the one password prompt that lists hosts also drives the
-// connect, so there is no second prompt, decrypt, or parse — the hosts
-// already parsed for the picker are handed straight to connectWithRaw.
+// Bare `mssh`: the one password prompt drives both list and connect — no second decrypt.
 export async function runListConnect(order: SortOrder = "asc", spawnFn?: SpawnFn): Promise<void> {
-  const loaded = loadSettings();
-  const path = configPath(loaded.settings);
-  requireExistingConfig(path);
-  const password = await resolvePassword(loaded, { forcePrompt: true });
+  const { path, password } = await openConfig({ forcePrompt: true });
 
   const raw = loadRaw(path, password);
   const hosts = parse(raw);

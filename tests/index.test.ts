@@ -1,5 +1,6 @@
 // index.ts's argv dispatch can only be exercised as a real process — it's the
-// entry point, not a function anything imports. Timeout + signal===null guards against a hung stdin prompt.
+// entry point, not a function anything imports. Timeout + signal===null
+// guards against a hung stdin prompt.
 import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -173,9 +174,8 @@ test("update with a trailing argument is rejected", () => {
   expect(result.stderr).toContain("Unexpected argument(s): extra");
 });
 
-// Proves update is dispatched before loadSettings/migrateLegacyConfig/sweepTempFiles
-// touch ~/.mssh at all — under `bun index.ts`, Bun.main is never the compiled
-// virtual path, so this must fail the same way regardless of HOME's contents.
+// Under `bun index.ts`, Bun.main is never the compiled virtual path, so this
+// must fail the same way regardless of HOME's contents.
 test("update under `bun index.ts` fails with the not-compiled message, never touching ~/.mssh", () => {
   const result = runCli(["update"], { HOME: emptyHome() });
   expect(result.signal).toBeNull();

@@ -1,5 +1,3 @@
-// Shared scratch-directory harness. Not a test file — no test() calls, so
-// bun test's discovery never picks it up; only ever imported.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -1,24 +1,19 @@
-// `mssh change-password`: re-encrypts the existing config under a new
-// password. Pure-local-crypto, same exemption as list/edit/delete — must
-// work on a machine with no ssh installed.
+// Pure-local-crypto, same exemption as list/edit/delete — must work on a
+// machine with no ssh installed.
 import { existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { configPath, keysDir, loadSettings, resolvePassword, toDisplayPath } from "../app-config";
-import { loadRaw, openKeyFile, saveHosts, sealKeyFile } from "../store";
-import { isSealedPayload } from "../crypto";
-import { parse } from "../ssh-config";
-import { isValidKeyFilename } from "../remote-keys";
-import { migratePlaintextKeys, reportMigratedKeys } from "../key-store";
-import { promptPassword } from "../prompt";
-import { fieldPrompt, PASSWORD_SET_LABEL, PASSWORD_CONFIRM_LABEL } from "../field-labels";
-import { passwordsMatch, isValidPassword } from "./setup";
-import { requireExistingConfig } from "./require-config";
-import { fatal } from "../exit";
+import { configPath, loadSettings } from "../config/settings";
+import { keysDir, toDisplayPath } from "../config/paths";
+import { resolvePassword, promptNewPassword } from "../config/password";
+import { loadRaw, openKeyFile, saveHosts, sealKeyFile } from "../core/store";
+import { isSealedPayload } from "../core/crypto";
+import { parse } from "../ssh/ssh-config";
+import { isValidKeyFilename } from "../keyring/remote-keys";
+import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
+import { requireExistingConfig } from "../core/require-config";
 
-// Re-seals already-decrypted plaintext under newPassword, and re-keys every
-// already-sealed key in keysDir the same way. Split from changePassword so
-// runChangePassword's verification-step loadRaw is reused instead of
-// decrypting twice — scrypt is the dominant cost of this command.
+// Split from changePassword so runChangePassword's verification-step loadRaw
+// is reused instead of decrypting twice — scrypt is the dominant cost here.
 //
 // Key re-key is a 3-step protocol with no split-password window: (1) stage
 // each key re-sealed under newPassword as `<name>.pem.next`, alongside its
@@ -59,9 +54,6 @@ export function reseal(path: string, raw: string, currentPassword: string, newPa
   }
 }
 
-// Verifies currentPassword against disk, then re-seals under newPassword. No
-// prompting, no process.exit — testable with real scratch files the same way
-// store.ts's saveHosts/loadRaw are. loadRaw's opaque error surfaces as-is.
 export function changePassword(path: string, currentPassword: string, newPassword: string, keysDir: string): void {
   reseal(path, loadRaw(path, currentPassword), currentPassword, newPassword, keysDir);
 }
@@ -74,19 +66,14 @@ export async function runChangePassword(): Promise<void> {
 
   console.error(`Re-keying ${path}.`);
 
-  // forcePrompt: true — a stray MSSH_PASSWORD in the environment must not let
-  // someone at your terminal re-key your config without entering it.
+  // forcePrompt: true — a stored MSSH_PASSWORD must not let someone at your
+  // terminal re-key your config without entering it.
   const current = await resolvePassword(loaded, { forcePrompt: true });
 
   // Verify current before collecting the new password twice, or a wrong
-  // current password is only discovered after two more prompts. Plaintext is
-  // kept (not re-derived), so reseal() below is the only other scrypt cost.
-  let raw: string;
-  try {
-    raw = loadRaw(path, current);
-  } catch (err) {
-    fatal(err instanceof Error ? err.message : String(err));
-  }
+  // current password only surfaces after two more prompts. A decrypt failure
+  // here just propagates — index.ts already prints err.message.
+  const raw = loadRaw(path, current);
 
   // Runs before re-keying so reseal() only ever finds already-sealed keys to
   // re-key — a key still plaintext from an older mssh version gets sealed
@@ -94,21 +81,9 @@ export async function runChangePassword(): Promise<void> {
   // to the new one in the same run as everything else.
   reportMigratedKeys(migratePlaintextKeys(keysDir(), current).migrated);
 
-  const next = await promptPassword(fieldPrompt(PASSWORD_SET_LABEL), {
-    validate: (value) => (isValidPassword(value) ? true : "Password must not be empty."),
-  });
+  const next = await promptNewPassword();
 
-  const confirm = await promptPassword(fieldPrompt(PASSWORD_CONFIRM_LABEL));
-
-  if (!passwordsMatch(next, confirm)) {
-    fatal("Passwords do not match.");
-  }
-
-  try {
-    reseal(path, raw, current, next, keysDir());
-  } catch (err) {
-    fatal(err instanceof Error ? err.message : String(err));
-  }
+  reseal(path, raw, current, next, keysDir());
 
   console.log(`Config re-keyed at ${path}.`);
 

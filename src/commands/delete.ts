@@ -1,44 +1,26 @@
-// `mssh config delete [name]`: pick (or take by name) a host, warn about any
-// other hosts that ProxyJump through it, confirm, then re-save without it.
-import { configPath, keysDir, loadSettings, resolvePassword } from "../app-config";
-import { loadHosts, saveHosts } from "../store";
-import { migratePlaintextKeys, reportMigratedKeys } from "../key-store";
-import { deleteHost, hostLabel, proxyJumpAliases, type Host } from "../ssh-config";
-import { promptConfirm } from "../prompt";
-import { findHost, pickHost } from "./edit";
-import { requireExistingConfig } from "./require-config";
-import { fatal } from "../exit";
+import { keysDir } from "../config/paths";
+import { loadHosts, saveHosts } from "../core/store";
+import { migratePlaintextKeys, reportMigratedKeys } from "../keyring/key-store";
+import { deleteHost, hostLabel, proxyJumpAliases, type Host } from "../ssh/host";
+import { promptConfirm } from "../cli/prompt";
+import { resolveTarget } from "../cli/pick-host";
+import { openConfig } from "../core/require-config";
 
-// Exact string match on proxyJump misses `user@bastion:2222` and comma-chain
-// forms — proxyJumpAliases is the same parser connect.ts's own jump
-// resolution relies on, reused rather than re-matched here.
+// proxyJumpAliases handles `user@bastion:2222`/comma-chain forms that an
+// exact string match on proxyJump would miss.
 export function findDependents(hosts: Host[], names: string[]): Host[] {
   return hosts.filter((h) => h.proxyJump !== undefined && proxyJumpAliases(h.proxyJump).some((alias) => names.includes(alias)));
 }
 
 export async function runDelete(name?: string): Promise<void> {
-  const loaded = loadSettings();
-  const path = configPath(loaded.settings);
-  requireExistingConfig(path);
-  const password = await resolvePassword(loaded, { forcePrompt: false });
+  const { path, password } = await openConfig({ forcePrompt: false });
 
   const hosts = loadHosts(path, password);
   reportMigratedKeys(migratePlaintextKeys(keysDir(), password).migrated);
 
-  let target: Host | undefined;
-  let targetName: string;
-  if (name !== undefined) {
-    target = findHost(hosts, name);
-    if (!target) {
-      fatal(`Host "${name}" not found.`);
-    }
-    targetName = name;
-  } else {
-    const picked = await pickHost(hosts);
-    if (!picked) return;
-    target = picked.host;
-    targetName = picked.pattern;
-  }
+  const resolved = await resolveTarget(hosts, name);
+  if (!resolved) return;
+  const { host: target, targetName } = resolved;
 
   if (target.names.length > 1) {
     console.error(`Warning: '${hostLabel(target)}' is one Host block with ${target.names.length} aliases — deleting it removes all of them.`);
