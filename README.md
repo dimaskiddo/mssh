@@ -39,6 +39,8 @@ graph TD
 
 The ephemeral config has to outlive the initial handoff to `ssh`: OpenSSH resolves a jump-host chain by re-invoking itself, and that second invocation reads the same file well after the first one returns. On POSIX, mssh detects the moment ssh authenticates — via a `ControlPath` socket that only appears once login succeeds — and destroys the ephemeral config and any decrypted keys right then, rather than waiting for the session to end; Windows' `ssh.exe` has no equivalent signal, so there the plaintext lives for the whole session. Either way, exit-time cleanup is armed before any file is ever created, so an interrupted start, a failed auth, or the session ending all leave nothing behind.
 
+The jump-key-pull handshake needs its own `ControlPath` socket, and a few filesystems (WSL's `/mnt` drives, some network mounts) accept the socket file but refuse the connection ssh actually makes to it. mssh detects that failure mode and falls back to `$XDG_RUNTIME_DIR/mssh`, or `/run/user/<uid>/mssh` when `XDG_RUNTIME_DIR` isn't set — never a shared or root-owned location.
+
 ---
 
 ## 🚀 Getting Started

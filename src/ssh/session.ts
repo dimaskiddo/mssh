@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createServer, createConnection } from "node:net";
-import { existsSync } from "node:fs";
+import { existsSync, linkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:os";
 import { join } from "node:path";
@@ -53,20 +53,34 @@ export function earlyPurgeUsable(path: string, platform: NodeJS.Platform): boole
 // A real bind+connect probe: some filesystems (WSL /mnt drvfs, some network
 // mounts) let a unix socket file be created but refuse the connect back to
 // it, which ssh's own ControlPersist relies on — existsSync alone can't catch that.
-export function socketDirUsable(dir: string): Promise<boolean> {
-  const probePath = join(dir, controlPathName(process.pid, randomBytes(8).toString("hex")));
+export function socketDirUsable(
+  dir: string,
+  link: (existingPath: string, newPath: string) => void = linkSync,
+): Promise<boolean> {
+  const bindPath = join(dir, controlPathName(process.pid, randomBytes(8).toString("hex")));
+  const linkedPath = join(dir, controlPathName(process.pid, randomBytes(8).toString("hex")));
 
   return new Promise((resolve) => {
     const server = createServer();
     const finish = (ok: boolean): void => {
       server.close();
-      tryUnlink(probePath);
+      tryUnlink(bindPath);
+      tryUnlink(linkedPath);
       resolve(ok);
     };
 
     server.once("error", () => finish(false));
-    server.listen(probePath, () => {
-      const client = createConnection(probePath);
+    server.listen(bindPath, () => {
+      // ssh itself binds at a temp name, then link()s it into the real
+      // ControlPath and connects through the link — some filesystems (WSL
+      // /mnt drvfs) accept the direct bind but refuse connect() through the
+      // link, so a probe that skips this step reports a false positive.
+      try {
+        link(bindPath, linkedPath);
+      } catch {
+        return finish(false);
+      }
+      const client = createConnection(linkedPath);
       client.once("connect", () => {
         client.destroy();
         finish(true);
@@ -92,8 +106,8 @@ export async function pickControlSocketDir(
   }
 
   throw new Error(
-    "control sockets don't work in ~/.mssh/run (e.g. a WSL /mnt drive) and no usable $XDG_RUNTIME_DIR was found — " +
-      "move ~/.mssh onto a Linux filesystem.",
+    "control sockets don't work in ~/.mssh/run (e.g. a WSL /mnt drive) and no usable $XDG_RUNTIME_DIR " +
+      "or /run/user/<uid> was found — move ~/.mssh onto a Linux filesystem.",
   );
 }
 

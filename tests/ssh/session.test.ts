@@ -97,6 +97,20 @@ test("socketDirUsable is false for a directory that does not exist", async () =>
   expect(await socketDirUsable("/nonexistent/mssh-socket-test-dir")).toBe(false);
 });
 
+// Reproduces WSL /mnt drvfs: bind succeeds but connect through ssh's
+// bind-then-link sequence fails. A probe that skips the link step would
+// wrongly report this directory as usable.
+test("socketDirUsable is false when linking the probe socket into place fails, and leaves the directory empty", async () => {
+  await withScratchDirAsync("mssh-socket-link-fails-", async (dir) => {
+    const failingLink = () => {
+      throw new Error("EOPNOTSUPP");
+    };
+    expect(await socketDirUsable(dir, failingLink)).toBe(false);
+    const { readdirSync } = await import("node:fs");
+    expect(readdirSync(dir)).toEqual([]);
+  });
+});
+
 test("pickControlSocketDir returns runDir when its probe passes", async () => {
   const probe = async (dir: string) => dir === "/run-dir";
   const ensureDir = () => {

@@ -107,8 +107,19 @@ function fakeStat(uid: number, mode: number): (path: string) => DirOwnership {
   return () => ({ uid, mode });
 }
 
-test("socketFallbackDir returns undefined when XDG_RUNTIME_DIR is unset", () => {
-  expect(socketFallbackDir({}, fakeStat(1000, 0o700), 1000)).toBeUndefined();
+test("socketFallbackDir returns undefined when XDG_RUNTIME_DIR is unset and /run/user/<uid> is missing", () => {
+  const throwing = () => {
+    throw new Error("ENOENT");
+  };
+  expect(socketFallbackDir({}, throwing, 1000)).toBeUndefined();
+});
+
+test("socketFallbackDir falls back to /run/user/<uid> when XDG_RUNTIME_DIR is unset but that dir is ours and 0700", () => {
+  expect(socketFallbackDir({}, fakeStat(1000, 0o700), 1000)).toBe("/run/user/1000/mssh");
+});
+
+test("socketFallbackDir returns undefined when XDG_RUNTIME_DIR is unset and /run/user/<uid> is owned by another uid", () => {
+  expect(socketFallbackDir({}, fakeStat(1001, 0o700), 1000)).toBeUndefined();
 });
 
 test("socketFallbackDir returns undefined when XDG_RUNTIME_DIR is relative", () => {

@@ -77,12 +77,22 @@ export function socketFallbackDir(
   stat: (path: string) => DirOwnership = statSync,
   uid: number | undefined = process.getuid?.(),
 ): string | undefined {
+  if (uid === undefined) return undefined;
+
   const xdg = env.XDG_RUNTIME_DIR;
-  if (xdg === undefined || !isAbsolute(xdg) || uid === undefined) return undefined;
+  let base: string;
+  if (xdg !== undefined) {
+    if (!isAbsolute(xdg)) return undefined;
+    base = xdg;
+  } else {
+    // A shell that never exported XDG_RUNTIME_DIR (su, some WSL setups) still
+    // usually has the systemd-logind per-user runtime dir on disk.
+    base = `/run/user/${uid}`;
+  }
 
   let stats: DirOwnership;
   try {
-    stats = stat(xdg);
+    stats = stat(base);
   } catch {
     return undefined;
   }
@@ -90,5 +100,5 @@ export function socketFallbackDir(
   if (stats.uid !== uid) return undefined;
   if ((stats.mode & 0o077) !== 0) return undefined;
 
-  return join(xdg, "mssh");
+  return join(base, "mssh");
 }
