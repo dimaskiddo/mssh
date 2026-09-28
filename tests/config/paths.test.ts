@@ -2,7 +2,17 @@ import { test, expect, spyOn } from "bun:test";
 import { homedir } from "node:os";
 import * as nodeOs from "node:os";
 import { join } from "node:path";
-import { expandHome, toDisplayPath, msshRootDir, runDir, keysDir, defaultEncConfigPath, pickHomeDir } from "../../src/config/paths";
+import {
+  expandHome,
+  toDisplayPath,
+  msshRootDir,
+  runDir,
+  keysDir,
+  defaultEncConfigPath,
+  pickHomeDir,
+  socketFallbackDir,
+  type DirOwnership,
+} from "../../src/config/paths";
 
 test("expandHome expands a bare ~ to the home directory", () => {
   expect(expandHome("~")).toBe(homedir());
@@ -91,4 +101,45 @@ test("pickHomeDir skips empty, undefined and relative candidates", () => {
 
 test("pickHomeDir returns undefined when no candidate qualifies", () => {
   expect(pickHomeDir([])).toBeUndefined();
+});
+
+function fakeStat(uid: number, mode: number): (path: string) => DirOwnership {
+  return () => ({ uid, mode });
+}
+
+test("socketFallbackDir returns undefined when XDG_RUNTIME_DIR is unset", () => {
+  expect(socketFallbackDir({}, fakeStat(1000, 0o700), 1000)).toBeUndefined();
+});
+
+test("socketFallbackDir returns undefined when XDG_RUNTIME_DIR is relative", () => {
+  expect(socketFallbackDir({ XDG_RUNTIME_DIR: "run/user/1000" }, fakeStat(1000, 0o700), 1000)).toBeUndefined();
+});
+
+test("socketFallbackDir returns undefined when the directory is owned by another uid", () => {
+  expect(socketFallbackDir({ XDG_RUNTIME_DIR: "/run/user/1000" }, fakeStat(1001, 0o700), 1000)).toBeUndefined();
+});
+
+test("socketFallbackDir returns undefined when the directory's mode grants group or other access", () => {
+  expect(socketFallbackDir({ XDG_RUNTIME_DIR: "/run/user/1000" }, fakeStat(1000, 0o755), 1000)).toBeUndefined();
+});
+
+test("socketFallbackDir returns undefined when stat throws (directory missing)", () => {
+  const throwing = () => {
+    throw new Error("ENOENT");
+  };
+  expect(socketFallbackDir({ XDG_RUNTIME_DIR: "/run/user/1000" }, throwing, 1000)).toBeUndefined();
+});
+
+test("socketFallbackDir returns <xdg>/mssh when the directory is 0700 and owned by us", () => {
+  expect(socketFallbackDir({ XDG_RUNTIME_DIR: "/run/user/1000" }, fakeStat(1000, 0o700), 1000)).toBe("/run/user/1000/mssh");
+});
+
+test("socketFallbackDir returns undefined when process.getuid is unavailable (e.g. Windows), using the real default parameter", () => {
+  const original = process.getuid;
+  process.getuid = undefined;
+  try {
+    expect(socketFallbackDir({ XDG_RUNTIME_DIR: "/run/user/1000" }, fakeStat(1000, 0o700))).toBeUndefined();
+  } finally {
+    process.getuid = original;
+  }
 });

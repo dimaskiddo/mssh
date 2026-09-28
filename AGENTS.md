@@ -30,7 +30,7 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **Platform** | `src/core/platform.ts` — `isWindows`, `isCompiledBinary` |
 | **RequireConfig / Exit** | `src/core/require-config.ts` — `requireExistingConfig()` and `openConfig(envPassword?)`, the shared `loadSettings`→`configPath`→`requireExistingConfig`→`resolvePassword` preamble. `envPassword` flows through only from `runConnect`; every other caller passes none, so `resolvePassword` always prompts for them. `src/core/exit.ts` — `fatal()` and `spawnFailureReason()`, the shared spawn-failure-to-message fallback (control-character-stripped) used by `acl.ts`/`remote-keys.ts` |
 | **Settings** | `src/config/settings.ts` — `~/.mssh` path layout, `config.yaml`/`.env` loading, `loadSettings`/`configPath` |
-| **Paths** | `src/config/paths.ts` — `homeDir`/`msshRootDir`/`runDir`/`keysDir`/`defaultEncConfigPath`/`expandHome` |
+| **Paths** | `src/config/paths.ts` — `homeDir`/`msshRootDir`/`runDir`/`keysDir`/`defaultEncConfigPath`/`expandHome`/`socketFallbackDir` (owner- and mode-checked `$XDG_RUNTIME_DIR/mssh`, used only when `run/` can't host a jump-key-pull ControlPath socket) |
 | **Password** | `src/config/password.ts` — `resolvePassword(envPassword?)`, the single place the auth-prompt split lives; `takeEnvPassword(env)` reads and deletes `MSSH_PASSWORD` from a process env object. `promptNewPassword()` is the set-password + confirm + match check shared by `setup`/`change-password` |
 | **Legacy** | `src/config/legacy.ts` — one-time migration from a pre-`~/.mssh` config location |
 | **SSHConfig** | `src/ssh/ssh-config.ts` — `parse`/`serialize`. Directive guards live in `ssh/directives.ts` (`REFUSED_DIRECTIVES`, `normalizeDirectiveKey`), tokenizing in `ssh/tokens.ts`, field validation in `ssh/validate.ts`, and pure `Host` mutations (`addHost`, `updateHostField`, `deleteHost`, `hostsWithoutProxyJump`, `emptyToUndefined`, `findHost`, `splitTags`, `filterByTags`, `setHostTags`) in `ssh/host.ts`. `extras[]` preserves unmodeled directives across an edit round-trip. `## Tags a,b` is the one comment `parse`/`serialize` model — an inert ssh comment holding a host's tags, guarded in `assertSerializable` the same way modeled fields are |
@@ -38,7 +38,7 @@ MSSH is a drop-in `ssh` wrapper around an AES-256-GCM encrypted SSH config. Neve
 | **SSHBinary** | `src/ssh/ssh-binary.ts` — `resolveSsh`/`requireSsh`, resolves `ssh` to an absolute path, per-OS install guidance |
 | **KeyStore** | `src/keyring/key-store.ts` — lifecycle of pulled keys: `materializeKeys` decrypts to `run/key-*` for a connection's lifetime, `migratePlaintextKeys` seals any key an older mssh version left plaintext (crash-safe, idempotent, also finishes an interrupted `change-password` re-key) |
 | **RemoteKeys / LocalKeys** | `src/keyring/remote-keys.ts` — remote `~/.ssh` listing and key download, argv-array only, filename allowlist. `src/keyring/local-keys.ts` — local key discovery by filename, reusing that allowlist |
-| **JumpKeyPull** | `src/keyring/jump-key-pull.ts` — `add`'s remote key-pull handshake through a ProxyJump bastion |
+| **JumpKeyPull** | `src/keyring/jump-key-pull.ts` — `add`'s remote key-pull handshake through a ProxyJump bastion. Its ControlPath goes through `pickControlSocketDir` (`ssh/session.ts`), and `closeControlMaster` always unlinks the socket even when `ssh -O exit` itself fails |
 | **SecureWrite / ACL / Executable** | `src/fs/secure-write.ts` — `writeSecure`/`writeSecureAtomic`/`ensureSecureDir`, plus `tryUnlink()`, the shared best-effort delete used across `session.ts`/`jump-key-pull.ts`/`executable.ts`. `src/fs/acl.ts` — Windows `icacls` lockdown. `src/fs/executable.ts` — `installExecutable`/`replaceExecutable`. Together the **only** modules that own permission enforcement |
 | **TempNames / Sweep** | `src/fs/temp-names.ts` — the `run/` filename producers (`tempConfigName`, `controlPathName`, `keyTempName`), the in-place suffix producers (`tmpSuffix`, `newSuffix`, `oldSuffix`) used by `secure-write.ts`/`executable.ts`, and their PID regexes. `src/fs/sweep.ts` — orphaned temp-file and stale-binary sweeping |
 | **ReleaseAssets / Zip** | `src/release/release-assets.ts` — `archiveName`/`binaryName`, plus `CHECKSUM_FILENAME`/`checksumLine`/`checksumFor`/`stripV`, the checksum-format naming table shared by `.scripts/release.ts` (builds archives) and `commands/update.ts` (downloads them). `src/release/zip.ts` — `extractZipEntry`, a minimal zip central-directory reader (stored + deflate only, no ZIP64) |
@@ -92,6 +92,7 @@ mssh version, --version             # print product name, version, author — no
 ### ProxyJump / Temp-File Lifetime
 - OpenSSH re-execs itself as a child with `-F <same temp path>` for ProxyJump, and that child does not start until the connection is being established — well after `spawn()` returns. Cleanup is wired to the parent ssh `'exit'` event plus `process.on('exit')`, never to the `spawn()` call itself. `add.ts`/`jump-key-pull.ts` may use `spawnSync` for their one-shot calls precisely because it blocks until the whole process tree has exited.
 - On POSIX, `connectWithRaw` (`src/ssh/session.ts`) purges the temp config and any decrypted keys as soon as ssh has authenticated, not only at exit: it passes `-o ControlMaster=yes -o ControlPath=<run/cm-*>` before the user's argv (so a later `-o` can't override it — `-o` is first-value-wins), and polls for that socket's appearance. OpenSSH only opens `ControlPath` after `ssh_login()` returns, and ProxyJump's own proxy command never forwards `-o` to the jump child, so this can't fire before the real target has authenticated. Exit/error stay as the fallback — for auth failure, `-G`, a user-supplied `-S`, an overlong/unsafe run-dir path, or Windows, where `ssh.exe` has no ControlMaster support and the whole feature is skipped (`earlyPurgeUsable`). `src/keyring/jump-key-pull.ts`'s key-pull handshake applies the same idea directly: it deletes the decrypted jump-host key as soon as its own preflight handshake authenticates, reusing the ControlPersist master for the ls/cat calls that follow.
+- `jump-key-pull.ts` uses `ControlPersist`, so the foreground ssh connects back through its own `ControlMaster` socket — unlike `connectWithRaw`'s fire-and-forget `ControlMaster=yes`. Some filesystems (WSL `/mnt` drvfs, some network mounts) let a unix socket file be created there but refuse that connect. `pickControlSocketDir`/`socketDirUsable` (`src/ssh/session.ts`) probe `run/` with a real bind+connect and fall back to `socketFallbackDir()` (`$XDG_RUNTIME_DIR/mssh`, owner- and mode-checked) when it fails, throwing a clear error if neither works. `closeControlMaster` (`jump-key-pull.ts`) always unlinks the control socket, even when `ssh -O exit` itself fails — otherwise a broken socket, and the backgrounded `ControlPersist` master behind it, both leak.
 
 ### Cross-Platform Paths
 - `node:path` `join()` and `os.homedir()` throughout. No hardcoded `/tmp` or `~`. `expandHome()` handles the leading-`~` form.
@@ -122,7 +123,7 @@ mssh version, --version             # print product name, version, author — no
 2. **No guessing** on crypto, permissions, or ProxyJump semantics. Pause, state the ambiguity, ask.
 3. **Never auto-commit.** Provide the diff; the user commits manually.
 4. **Never auto-run pipeline.** Provide exact command + expected output, wait for user.
-5. **No system temp dirs.** Runtime files live in `~/.mssh/run/` only.
+5. **No system temp dirs.** Runtime files live in `~/.mssh/run/` only — except the jump-key-pull `ControlPath` socket, which falls back to `$XDG_RUNTIME_DIR/mssh` (owner- and mode-checked, never plaintext) when `~/.mssh/run` can't host a unix socket.
 6. **Minimal comments.** Comments describe WHY, never WHAT or HOW.
    - No step-by-step process descriptions or inline restatements (`// increment counter` on `counter++`).
    - No section separator comments (`// --- Section ---`).
@@ -144,7 +145,7 @@ mssh/
 │   │   └── require-config.ts  # requireExistingConfig(), openConfig(envPassword?)
 │   ├── config/
 │   │   ├── settings.ts        # ~/.mssh path layout, config.yaml/.env loading, loadSettings/configPath
-│   │   ├── paths.ts           # homeDir/msshRootDir/runDir/keysDir/defaultEncConfigPath/expandHome
+│   │   ├── paths.ts           # homeDir/msshRootDir/runDir/keysDir/defaultEncConfigPath/expandHome/socketFallbackDir
 │   │   ├── password.ts        # resolvePassword(envPassword?), takeEnvPassword — the single auth-prompt split; promptNewPassword()
 │   │   └── legacy.ts          # migration from a pre-~/.mssh config location
 │   ├── fs/
@@ -160,13 +161,13 @@ mssh/
 │   │   ├── host.ts            # Host type + pure mutations (addHost, updateHostField, deleteHost, findHost, ...)
 │   │   ├── ssh-config.ts      # parse/serialize
 │   │   ├── argv.ts            # rejectedFlags/firstPositional — the ssh-flag guard
-│   │   ├── session.ts         # connectWithRaw — ProxyJump/temp-file lifetime
+│   │   ├── session.ts         # connectWithRaw — ProxyJump/temp-file lifetime; pickControlSocketDir/socketDirUsable — ControlPath fallback probe
 │   │   └── ssh-binary.ts      # resolveSsh/requireSsh — resolve ssh to an absolute path, per-OS install guidance
 │   ├── keyring/
 │   │   ├── key-store.ts       # materializeKeys/migratePlaintextKeys
 │   │   ├── local-keys.ts      # Local key discovery: Identity File default + already-pulled keysDir() keys
 │   │   ├── remote-keys.ts     # Remote ~/.ssh listing + key download
-│   │   └── jump-key-pull.ts   # add's remote key-pull handshake through a ProxyJump bastion
+│   │   └── jump-key-pull.ts   # add's remote key-pull handshake through a ProxyJump bastion; closeControlMaster
 │   ├── release/
 │   │   ├── release-assets.ts  # archiveName/binaryName, CHECKSUM_FILENAME/checksumLine/checksumFor/stripV — shared with .scripts/release.ts
 │   │   ├── zip.ts             # extractZipEntry — minimal zip reader (stored + deflate, no ZIP64)

@@ -1,5 +1,16 @@
 import { test, expect } from "bun:test";
-import { forwardsTermAndHup, earlyPurgeUsable, controlPathUsable, childExitCode, earlySignals } from "../../src/ssh/session";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { withScratchDirAsync } from "../helpers";
+import {
+  forwardsTermAndHup,
+  earlyPurgeUsable,
+  controlPathUsable,
+  childExitCode,
+  earlySignals,
+  socketDirUsable,
+  pickControlSocketDir,
+} from "../../src/ssh/session";
 
 test("forwardsTermAndHup is true on POSIX platforms", () => {
   expect(forwardsTermAndHup("linux")).toBe(true);
@@ -71,4 +82,46 @@ test("earlySignals is SIGINT, SIGTERM, SIGHUP on POSIX", () => {
 
 test("earlySignals is SIGINT only on win32", () => {
   expect(earlySignals("win32")).toEqual(["SIGINT"]);
+});
+
+test("socketDirUsable is true for a real directory that supports unix sockets, and leaves it empty afterward", async () => {
+  await withScratchDirAsync("mssh-socket-usable-", async (dir) => {
+    expect(await socketDirUsable(dir)).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+    const { readdirSync } = await import("node:fs");
+    expect(readdirSync(dir)).toEqual([]);
+  });
+});
+
+test("socketDirUsable is false for a directory that does not exist", async () => {
+  expect(await socketDirUsable("/nonexistent/mssh-socket-test-dir")).toBe(false);
+});
+
+test("pickControlSocketDir returns runDir when its probe passes", async () => {
+  const probe = async (dir: string) => dir === "/run-dir";
+  const ensureDir = () => {
+    throw new Error("must not be called when runDir already works");
+  };
+  expect(await pickControlSocketDir("/run-dir", "/fallback-dir", probe, ensureDir)).toBe("/run-dir");
+});
+
+test("pickControlSocketDir returns the fallback when runDir's probe fails but the fallback's passes", async () => {
+  const probe = async (dir: string) => dir === "/fallback-dir";
+  const ensured: string[] = [];
+  expect(await pickControlSocketDir("/run-dir", "/fallback-dir", probe, (d) => ensured.push(d))).toBe("/fallback-dir");
+  expect(ensured).toEqual(["/fallback-dir"]);
+});
+
+test("pickControlSocketDir throws guidance when both runDir and the fallback fail", async () => {
+  const probe = async () => false;
+  await expect(pickControlSocketDir("/run-dir", "/fallback-dir", probe, () => {})).rejects.toThrow(
+    /control sockets don't work in ~\/.mssh\/run/,
+  );
+});
+
+test("pickControlSocketDir throws when runDir fails and there is no fallback", async () => {
+  const probe = async () => false;
+  await expect(pickControlSocketDir("/run-dir", undefined, probe, () => {})).rejects.toThrow(
+    /control sockets don't work in ~\/.mssh\/run/,
+  );
 });

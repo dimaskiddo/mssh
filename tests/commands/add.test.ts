@@ -1,10 +1,10 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { hostsWithoutProxyJump, type Host } from "../../src/ssh/host";
 import { buildNewHost, defaultUsername, validateNewAlias } from "../../src/commands/add";
-import { tempConfigRunner, preflightArgv, controlExitArgv } from "../../src/keyring/jump-key-pull";
+import { tempConfigRunner, preflightArgv, controlExitArgv, closeControlMaster } from "../../src/keyring/jump-key-pull";
 import { resolveSsh } from "../../src/ssh/ssh-binary";
 
 test("buildNewHost keeps required name and treats blank optional fields as undefined", () => {
@@ -206,4 +206,40 @@ test("controlExitArgv puts -- directly before the alias", () => {
   const argv = controlExitArgv("/tmp/cm-abc", "bastion1");
   const idx = argv.indexOf("bastion1");
   expect(argv[idx - 1]).toBe("--");
+});
+
+test("closeControlMaster unlinks the control socket file after a successful exit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mssh-closecontrolmaster-test-"));
+  try {
+    const socketPath = join(dir, "cm-fake");
+    writeFileSync(socketPath, "");
+    closeControlMaster(socketPath, "bastion1", () => {});
+    expect(existsSync(socketPath)).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("closeControlMaster unlinks the control socket file even when the exit runner throws", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mssh-closecontrolmaster-test-"));
+  try {
+    const socketPath = join(dir, "cm-fake");
+    writeFileSync(socketPath, "");
+    closeControlMaster(socketPath, "bastion1", () => {
+      throw new Error("ssh -O exit failed");
+    });
+    expect(existsSync(socketPath)).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("closeControlMaster does not throw when the socket file was already gone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mssh-closecontrolmaster-test-"));
+  try {
+    const socketPath = join(dir, "cm-never-existed");
+    expect(() => closeControlMaster(socketPath, "bastion1", () => {})).not.toThrow();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

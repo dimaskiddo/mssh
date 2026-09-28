@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { statSync } from "node:fs";
 import { isAbsolute, join, sep } from "node:path";
 import { isWindows } from "../core/platform";
 
@@ -63,4 +64,31 @@ export function toDisplayPath(absolutePath: string): string {
   const homeWithSep = h.endsWith(sep) ? h : h + sep;
   if (a.startsWith(homeWithSep)) return "~" + sep + absolutePath.slice(homeWithSep.length);
   return absolutePath;
+}
+
+// Where a jump-key-pull ControlPath socket goes when ~/.mssh/run can't host
+// unix sockets (e.g. a WSL /mnt drive). Only ever a socket, never plaintext,
+// but still owner- and mode-checked: a dir some other user/process controls
+// is refused rather than trusted.
+export type DirOwnership = { uid: number; mode: number };
+
+export function socketFallbackDir(
+  env: NodeJS.ProcessEnv = process.env,
+  stat: (path: string) => DirOwnership = statSync,
+  uid: number | undefined = process.getuid?.(),
+): string | undefined {
+  const xdg = env.XDG_RUNTIME_DIR;
+  if (xdg === undefined || !isAbsolute(xdg) || uid === undefined) return undefined;
+
+  let stats: DirOwnership;
+  try {
+    stats = stat(xdg);
+  } catch {
+    return undefined;
+  }
+
+  if (stats.uid !== uid) return undefined;
+  if ((stats.mode & 0o077) !== 0) return undefined;
+
+  return join(xdg, "mssh");
 }

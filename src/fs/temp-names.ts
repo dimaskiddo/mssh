@@ -44,7 +44,6 @@ function pidFrom(re: RegExp): (name: string) => number | undefined {
 export const cfgPid = pidFrom(CFG_NAME);
 export const keyPid = pidFrom(KEY_NAME);
 
-// jump-key-pull.ts's own pid-less cm-<hex> control sockets never match this and are left alone.
 export const cmPid = pidFrom(CM_NAME);
 
 export const tmpPid = pidFrom(TMP_NAME);

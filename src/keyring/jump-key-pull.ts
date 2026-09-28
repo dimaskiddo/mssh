@@ -4,15 +4,15 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { keysDir, runDir } from "../config/paths";
+import { keysDir, runDir, socketFallbackDir } from "../config/paths";
 import { serialize } from "../ssh/ssh-config";
 import { type Host } from "../ssh/host";
 import { promptSelect, promptConfirm } from "../cli/prompt";
 import { requireSsh } from "../ssh/ssh-binary";
-import { earlySignals, childExitCode, controlPathUsable } from "../ssh/session";
+import { earlySignals, childExitCode, controlPathUsable, pickControlSocketDir } from "../ssh/session";
 import { ensureSecureDir, writeSecure, tryUnlink } from "../fs/secure-write";
 import { listRemoteKeys, downloadRemoteKey, localKeyName, type RemoteRunner } from "./remote-keys";
-import { tempConfigName } from "../fs/temp-names";
+import { tempConfigName, controlPathName } from "../fs/temp-names";
 import { FIELD_LABELS, KEY_PULL_LABEL, fieldPrompt } from "../cli/field-labels";
 import { materializeKeys } from "./key-store";
 import { listPulledKeys } from "./local-keys";
@@ -53,6 +53,19 @@ export function controlExitArgv(controlPath: string, jumpAlias: string): string[
   return ["-F", "none", "-S", controlPath, "-O", "exit", "--", jumpAlias];
 }
 
+// `ssh -O exit` can itself fail (e.g. the socket never connected in the first
+// place, per the drvfs bug this fixes), so the unlink always runs regardless
+// — otherwise the socket file, and the backgrounded ControlPersist master
+// behind it, both leak.
+export function closeControlMaster(controlPath: string, jumpAlias: string, runExit: () => void): void {
+  try {
+    runExit();
+  } catch {
+    // best-effort
+  }
+  tryUnlink(controlPath);
+}
+
 // Checked before requireSsh() and the handshake: a second host behind the
 // same bastion shouldn't cost another password/MFA round trip.
 async function reuseExistingKey(jumpAlias: string): Promise<string | undefined> {
@@ -82,11 +95,18 @@ export async function extractJumpHostKey(jumpHost: Host, jumpAlias: string, pass
   ensureSecureDir(runDir());
   const tmpPath = join(runDir(), tempConfigName(process.pid, randomBytes(8).toString("hex")));
   // Shared control connection avoids re-running the full auth handshake (and MFA) twice.
-  const controlPath = join(runDir(), `cm-${randomBytes(8).toString("hex")}`);
+  // ControlPersist backgrounds the master and the foreground ssh then connects
+  // *back* through this socket, so the directory must actually support unix
+  // sockets (some mounts, e.g. WSL /mnt drvfs, let the file be created but
+  // refuse the connect) — pickControlSocketDir probes for that and falls
+  // back to $XDG_RUNTIME_DIR/mssh rather than let ssh die with a confusing
+  // "Connection refused".
+  const socketDir = await pickControlSocketDir(runDir(), socketFallbackDir());
+  const controlPath = join(socketDir, controlPathName(process.pid, randomBytes(8).toString("hex")));
   // Fail fast, before any sensitive work, rather than let ssh die mid-handshake
   // on an obscure sun_path error.
   if (!controlPathUsable(controlPath)) {
-    throw new Error(`~/.mssh/run path is too long for ssh's ControlPath socket limit: ${controlPath}`);
+    throw new Error(`control socket path is too long for ssh's ControlPath socket limit: ${controlPath}`);
   }
   const runner = tempConfigRunner(tmpPath, sshPath);
   const keyTempPaths: string[] = [];
@@ -96,11 +116,9 @@ export async function extractJumpHostKey(jumpHost: Host, jumpAlias: string, pass
   const cleanup = (): void => {
     if (cleaned) return;
     cleaned = true;
-    try {
+    closeControlMaster(controlPath, jumpAlias, () => {
       spawnSync(sshPath, controlExitArgv(controlPath, jumpAlias), { timeout: REMOTE_COMMAND_TIMEOUT_MS });
-    } catch {
-      // best-effort
-    }
+    });
     tryUnlink(tmpPath);
     for (const keyTempPath of keyTempPaths) tryUnlink(keyTempPath);
   };

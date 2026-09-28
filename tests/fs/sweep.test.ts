@@ -70,6 +70,35 @@ test("sweepOrphanedTempFiles removes a cm-* entry whose pid is dead, keeps one w
   });
 });
 
+test("sweepOrphanedTempFiles also sweeps a dead-pid cm-* entry from the socket fallback dir, keeps a live one", () => {
+  withScratchDir((dir) => {
+    const runDir = join(dir, "run");
+    mkdirSync(runDir);
+    const socketDir = join(dir, "socket-fallback");
+    mkdirSync(socketDir);
+    writeFileSync(join(socketDir, `cm-${DEAD_PID}-aaaaaaaa`), "stale control socket");
+    writeFileSync(join(socketDir, `cm-${process.pid}-bbbbbbbb`), "live control socket");
+
+    sweepOrphanedTempFiles(runDir, join(dir, "config-dir", "config"), join(dir, "keys-dir"), socketDir);
+
+    expect(readdirSync(socketDir).sort()).toEqual([`cm-${process.pid}-bbbbbbbb`].sort());
+  });
+});
+
+test("sweepOrphanedTempFiles does nothing when the socket fallback dir is undefined or missing", () => {
+  withScratchDir((dir) => {
+    const runDir = join(dir, "run");
+    mkdirSync(runDir);
+
+    expect(() =>
+      sweepOrphanedTempFiles(runDir, join(dir, "config-dir", "config"), join(dir, "keys-dir"), undefined),
+    ).not.toThrow();
+    expect(() =>
+      sweepOrphanedTempFiles(runDir, join(dir, "config-dir", "config"), join(dir, "keys-dir"), join(dir, "nonexistent-socket-dir")),
+    ).not.toThrow();
+  });
+});
+
 test("sweepOrphanedTempFiles removes a config-directory .tmp- entry whose pid is dead, keeps one whose pid is live", () => {
   withScratchDir((dir) => {
     writeFileSync(join(dir, "config"), "the real config");

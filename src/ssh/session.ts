@@ -10,6 +10,7 @@
 // an unsafe path, or Windows.
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { createServer, createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:os";
@@ -47,6 +48,53 @@ export function controlPathUsable(path: string): boolean {
 export function earlyPurgeUsable(path: string, platform: NodeJS.Platform): boolean {
   if (platform === "win32") return false;
   return controlPathUsable(path);
+}
+
+// A real bind+connect probe: some filesystems (WSL /mnt drvfs, some network
+// mounts) let a unix socket file be created but refuse the connect back to
+// it, which ssh's own ControlPersist relies on — existsSync alone can't catch that.
+export function socketDirUsable(dir: string): Promise<boolean> {
+  const probePath = join(dir, controlPathName(process.pid, randomBytes(8).toString("hex")));
+
+  return new Promise((resolve) => {
+    const server = createServer();
+    const finish = (ok: boolean): void => {
+      server.close();
+      tryUnlink(probePath);
+      resolve(ok);
+    };
+
+    server.once("error", () => finish(false));
+    server.listen(probePath, () => {
+      const client = createConnection(probePath);
+      client.once("connect", () => {
+        client.destroy();
+        finish(true);
+      });
+      client.once("error", () => finish(false));
+    });
+  });
+}
+
+// Windows is skipped entirely — no ControlMaster there, so no socket dir is
+// ever needed and this must never probe or create one.
+export async function pickControlSocketDir(
+  runDirPath: string,
+  fallback: string | undefined,
+  probe: (dir: string) => Promise<boolean> = socketDirUsable,
+  ensureDir: (dir: string) => void = ensureSecureDir,
+): Promise<string> {
+  if (await probe(runDirPath)) return runDirPath;
+
+  if (fallback !== undefined) {
+    ensureDir(fallback);
+    if (await probe(fallback)) return fallback;
+  }
+
+  throw new Error(
+    "control sockets don't work in ~/.mssh/run (e.g. a WSL /mnt drive) and no usable $XDG_RUNTIME_DIR was found — " +
+      "move ~/.mssh onto a Linux filesystem.",
+  );
 }
 
 // 128 + signal number, so scripts see the same exit code ssh/bash would give.

@@ -49,7 +49,9 @@ function sweepDir(dir: string, matches: (name: string) => boolean, pidOf: (name:
 // configDir may be shared with other tools (it's wherever the user points
 // MSSH_CONFIG_PATH), so its .tmp- sweep is scoped to this config's own
 // basename. keysDir is ours alone, so every .tmp- name there is fair game.
-export function sweepOrphanedTempFiles(runDir: string, configPath: string, keysDir: string): void {
+// socketDir (jump-key-pull's ControlPath fallback, e.g. $XDG_RUNTIME_DIR/mssh)
+// is optional and only ever holds cm-* sockets, never plaintext.
+export function sweepOrphanedTempFiles(runDir: string, configPath: string, keysDir: string, socketDir?: string): void {
   sweepDir(
     runDir,
     (name) => CFG_NAME.test(name) || KEY_NAME.test(name) || CM_NAME.test(name),
@@ -59,6 +61,8 @@ export function sweepOrphanedTempFiles(runDir: string, configPath: string, keysD
   const tmpPrefix = `${basename(configPath)}.tmp-`;
   sweepDir(dirname(configPath), (name) => name.startsWith(tmpPrefix) && TMP_NAME.test(name), tmpPid);
   sweepDir(keysDir, (name) => TMP_NAME.test(name), tmpPid);
+
+  if (socketDir !== undefined) sweepDir(socketDir, (name) => CM_NAME.test(name), cmPid);
 }
 
 // A running executable can't delete its own old copy (POSIX leaves the

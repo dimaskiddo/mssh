@@ -9,7 +9,7 @@ import { runConnect } from "./src/commands/connect";
 import { runChangePassword } from "./src/commands/change-password";
 import { runUpdate } from "./src/commands/update";
 import { configPath, loadSettings, type Settings } from "./src/config/settings";
-import { defaultEncConfigPath, keysDir, runDir, toDisplayPath } from "./src/config/paths";
+import { defaultEncConfigPath, keysDir, runDir, socketFallbackDir, toDisplayPath } from "./src/config/paths";
 import { takeEnvPassword } from "./src/config/password";
 import { legacyEncConfigPath, migrateLegacyConfigFrom } from "./src/config/legacy";
 import { sweepOrphanedTempFiles, sweepBinaryLeftovers } from "./src/fs/sweep";
@@ -44,7 +44,7 @@ function migrateLegacyConfig(settings: Settings): void {
 }
 
 function sweepTempFiles(settings: Settings): void {
-  sweepOrphanedTempFiles(runDir(), configPath(settings), keysDir());
+  sweepOrphanedTempFiles(runDir(), configPath(settings), keysDir(), socketFallbackDir());
 }
 
 // Silent trailing args (`mssh setup anything`) look like they configured
