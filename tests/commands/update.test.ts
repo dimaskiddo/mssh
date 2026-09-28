@@ -3,7 +3,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { isNewer, checksumFor, runUpdate, type UpdateDeps } from "../../src/commands/update";
+import {
+  isNewer,
+  checksumFor,
+  runUpdate,
+  tagFromLatestRedirect,
+  rateLimitHint,
+  type UpdateDeps,
+} from "../../src/commands/update";
 import { archiveName, binaryName } from "../../src/release/release-assets";
 import { withScratchDirAsync as withScratchDir } from "../helpers";
 
@@ -124,8 +131,13 @@ function fakeFetch(routes: Map<string, () => Response>): typeof fetch {
 }
 
 const RELEASE_URL = "https://api.github.com/repos/dimaskiddo/mssh/releases/latest";
+const LATEST_WEB_URL = "https://github.com/dimaskiddo/mssh/releases/latest";
 const ARCHIVE_URL = "https://example.invalid/archive.zip";
 const CHECKSUM_URL = "https://example.invalid/checksum.txt";
+
+function rateLimited(status: 403 | 429, headers: Record<string, string> = {}): Response {
+  return new Response("rate limited", { status, headers });
+}
 
 function baseDeps(dir: string, overrides: Partial<UpdateDeps> = {}): UpdateDeps {
   const target = join(dir, "mssh");
@@ -269,6 +281,109 @@ test("runUpdate fails clearly on an HTTP error from the release endpoint", async
     const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
     await expect(runUpdate(deps)).rejects.toThrow(/HTTP 500/);
   });
+});
+
+test("runUpdate does not fall back to github.com on a non-rate-limit error", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const routes = new Map<string, () => Response>([[RELEASE_URL, () => new Response("nope", { status: 500 })]]);
+    const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
+    // fakeFetch throws "no route" for LATEST_WEB_URL, which would surface as a
+    // different message if a fallback were (wrongly) attempted here.
+    await expect(runUpdate(deps)).rejects.toThrow(/HTTP 500/);
+  });
+});
+
+test("runUpdate falls back to github.com's release page when the API is rate limited (403)", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const binary = Buffer.from("new mssh binary");
+    const archive = buildZipWithBinary("mssh", binary);
+    const archiveName_ = archiveName("0.1.6", "linux", "x64");
+    const checksum = `${createHash("sha256").update(archive).digest("hex")}  ${archiveName_}\n`;
+    const fallbackArchiveUrl = `https://github.com/dimaskiddo/mssh/releases/download/v0.1.6/${archiveName_}`;
+    const fallbackChecksumUrl = "https://github.com/dimaskiddo/mssh/releases/download/v0.1.6/checksum.txt";
+
+    const routes = new Map<string, () => Response>([
+      [RELEASE_URL, () => rateLimited(403, { "x-ratelimit-remaining": "0" })],
+      [LATEST_WEB_URL, () => Response.redirect("https://github.com/dimaskiddo/mssh/releases/tag/v0.1.6", 302)],
+      [fallbackArchiveUrl, () => new Response(archive)],
+      [fallbackChecksumUrl, () => new Response(checksum)],
+    ]);
+
+    let replaced: Buffer | undefined;
+    let committed = false;
+    const deps = baseDeps(dir, {
+      fetchFn: fakeFetch(routes),
+      replace: (_target, data) => {
+        replaced = data;
+        return {
+          commit: () => {
+            committed = true;
+          },
+          rollback: () => {
+            throw new Error("rollback should not run on success");
+          },
+        };
+      },
+    });
+
+    await runUpdate(deps);
+    expect(replaced).toEqual(binary);
+    expect(committed).toBe(true);
+  });
+});
+
+test("runUpdate falls back on a 429 and reports up to date without downloading", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    let archiveFetched = false;
+    const routes = new Map<string, () => Response>([
+      [RELEASE_URL, () => rateLimited(429, { "retry-after": "30" })],
+      [LATEST_WEB_URL, () => Response.redirect("https://github.com/dimaskiddo/mssh/releases/tag/v0.1.5", 302)],
+      ["https://github.com/dimaskiddo/mssh/releases/download/v0.1.5/archive.zip", () => ((archiveFetched = true), new Response(""))],
+    ]);
+    const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
+    await runUpdate(deps);
+    expect(archiveFetched).toBe(false);
+    expect(readFileSync(deps.execPath, "utf8")).toBe("old mssh binary");
+  });
+});
+
+test("runUpdate reports the rate-limit reset time when both the API and the fallback fail", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const routes = new Map<string, () => Response>([
+      [RELEASE_URL, () => rateLimited(403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1790000000" })],
+      [LATEST_WEB_URL, () => new Response("nope", { status: 500 })],
+    ]);
+    const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
+    await expect(runUpdate(deps)).rejects.toThrow(/HTTP 403.*rate limit.*resets at 2026-/);
+  });
+});
+
+test("runUpdate refuses a fallback redirect to a host other than github.com", async () => {
+  await withScratchDir("mssh-update-test-", async (dir) => {
+    const routes = new Map<string, () => Response>([
+      [RELEASE_URL, () => rateLimited(403)],
+      [LATEST_WEB_URL, () => Response.redirect("https://evil.example/dimaskiddo/mssh/releases/tag/v9.9.9", 302)],
+    ]);
+    const deps = baseDeps(dir, { fetchFn: fakeFetch(routes) });
+    await expect(runUpdate(deps)).rejects.toThrow(/HTTP 403/);
+  });
+});
+
+test("tagFromLatestRedirect: accepts only the exact release-tag URL shape", () => {
+  expect(tagFromLatestRedirect("https://github.com/dimaskiddo/mssh/releases/tag/v0.1.6")).toBe("v0.1.6");
+  expect(tagFromLatestRedirect(null)).toBeUndefined();
+  expect(tagFromLatestRedirect("https://evil.example/dimaskiddo/mssh/releases/tag/v0.1.6")).toBeUndefined();
+  expect(tagFromLatestRedirect("https://github.com/dimaskiddo/mssh/releases/tag/v0.1.6/../x")).toBeUndefined();
+  expect(tagFromLatestRedirect("https://github.com/dimaskiddo/mssh/releases/tag/not-a-version")).toBeUndefined();
+});
+
+test("rateLimitHint: prefers retry-after, then the rate-limit reset time, then empty", () => {
+  expect(rateLimitHint(new Headers({ "retry-after": "30" }))).toBe(" — GitHub API rate limit reached, retry after 30 s");
+  expect(
+    rateLimitHint(new Headers({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1790000000" })),
+  ).toBe(" — GitHub API rate limit reached, resets at 2026-09-21T14:13:20.000Z");
+  expect(rateLimitHint(new Headers({ "x-ratelimit-remaining": "5" }))).toBe("");
+  expect(rateLimitHint(new Headers())).toBe("");
 });
 
 test("runUpdate rolls back when the post-swap smoke test fails", async () => {

@@ -8,9 +8,15 @@ import { isCompiledBinary } from "../core/platform";
 import pkg from "../../package.json";
 
 const RELEASES_URL = "https://api.github.com/repos/dimaskiddo/mssh/releases/latest";
+const REPO_URL = "https://github.com/dimaskiddo/mssh";
+const LATEST_WEB_URL = `${REPO_URL}/releases/latest`;
+// Pinned host + exact tag shape: this string is spliced straight into the
+// download URL below, so a redirect to another host or an unexpected path
+// can't steer the download anywhere but a real dimaskiddo/mssh release.
+const LATEST_REDIRECT_RE = /^https:\/\/github\.com\/dimaskiddo\/mssh\/releases\/tag\/(v\d+\.\d+\.\d+)$/;
 const RELEASE_FETCH_TIMEOUT_MS = 30_000;
 const ARCHIVE_FETCH_TIMEOUT_MS = 600_000;
-// ponytail: size cap checked after the full body is buffered, not streamed.
+// size cap checked after the full body is buffered, not streamed.
 // Upgrade path: cap via response.body's reader.
 const ARCHIVE_MAX_BYTES = 256 * 1024 * 1024;
 const BINARY_MAX_BYTES = 512 * 1024 * 1024;
@@ -39,6 +45,57 @@ export { checksumFor };
 
 type ReleaseAsset = { name: string; browser_download_url: string };
 type ReleaseResponse = { tag_name?: string; assets?: ReleaseAsset[] };
+
+export function tagFromLatestRedirect(location: string | null): string | undefined {
+  if (location === null) return undefined;
+  return LATEST_REDIRECT_RE.exec(location)?.[1];
+}
+
+export function rateLimitHint(headers: Headers): string {
+  const retryAfter = headers.get("retry-after");
+  if (retryAfter !== null) return ` — GitHub API rate limit reached, retry after ${retryAfter} s`;
+  const remaining = headers.get("x-ratelimit-remaining");
+  const reset = headers.get("x-ratelimit-reset");
+  if (remaining === "0" && reset !== null) {
+    const resetAt = new Date(Number(reset) * 1000).toISOString();
+    return ` — GitHub API rate limit reached, resets at ${resetAt}`;
+  }
+  return "";
+}
+
+type LatestRelease = { tag: string; urlFor: (name: string) => string | undefined };
+
+async function resolveLatest(fetchFn: typeof fetch, signal: AbortSignal): Promise<LatestRelease> {
+  const res = await fetchFn(RELEASES_URL, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "mssh-update" },
+    signal,
+  });
+  if (res.ok) {
+    const release = (await res.json()) as ReleaseResponse;
+    if (!release.tag_name || typeof release.tag_name !== "string") {
+      throw new Error("update: release response is missing tag_name");
+    }
+    const assets = release.assets ?? [];
+    return { tag: release.tag_name, urlFor: (name) => assets.find((a) => a.name === name)?.browser_download_url };
+  }
+  if (res.status !== 403 && res.status !== 429) {
+    throw new Error(`could not query the latest release (HTTP ${res.status})`);
+  }
+
+  // The unauthenticated GitHub API caps out at 60 requests/hour per IP, which
+  // a shared corporate NAT can exhaust — fall back to the same release page a
+  // browser would hit, which isn't API rate limited.
+  const fallback = await fetchFn(LATEST_WEB_URL, {
+    headers: { "User-Agent": "mssh-update" },
+    redirect: "manual",
+    signal,
+  });
+  const tag = (fallback.status === 301 || fallback.status === 302) && tagFromLatestRedirect(fallback.headers.get("location"));
+  if (!tag) {
+    throw new Error(`could not query the latest release (HTTP ${res.status}${rateLimitHint(res.headers)}; github.com fallback also failed)`);
+  }
+  return { tag, urlFor: (name) => `${REPO_URL}/releases/download/${tag}/${name}` };
+}
 
 export type UpdateDeps = {
   fetchFn: typeof fetch;
@@ -86,32 +143,23 @@ export async function runUpdate(deps: UpdateDeps = defaultDeps()): Promise<void>
     throw new Error("mssh update only works on a compiled release binary");
   }
 
-  const res = await deps.fetchFn(RELEASES_URL, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "mssh-update" },
-    signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`could not query the latest release (HTTP ${res.status})`);
-  const release = (await res.json()) as ReleaseResponse;
-  if (!release.tag_name || typeof release.tag_name !== "string") {
-    throw new Error("update: release response is missing tag_name");
-  }
+  const release = await resolveLatest(deps.fetchFn, AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS));
 
-  if (!isNewer(release.tag_name, deps.currentVersion)) {
+  if (!isNewer(release.tag, deps.currentVersion)) {
     console.log(`mssh v${deps.currentVersion} is already up to date.`);
     return;
   }
 
-  const version = stripV(release.tag_name);
+  const version = stripV(release.tag);
   const archive = archiveName(version, deps.platform, deps.arch);
-  const assets = release.assets ?? [];
-  const archiveAsset = assets.find((a) => a.name === archive);
-  const checksumAsset = assets.find((a) => a.name === CHECKSUM_FILENAME);
-  if (!archiveAsset) throw new Error(`release ${release.tag_name} has no build for ${deps.platform}/${deps.arch}`);
-  if (!checksumAsset) throw new Error(`release ${release.tag_name} is missing ${CHECKSUM_FILENAME}`);
+  const archiveUrl = release.urlFor(archive);
+  const checksumUrl = release.urlFor(CHECKSUM_FILENAME);
+  if (!archiveUrl) throw new Error(`release ${release.tag} has no build for ${deps.platform}/${deps.arch}`);
+  if (!checksumUrl) throw new Error(`release ${release.tag} is missing ${CHECKSUM_FILENAME}`);
 
-  console.log(`Downloading mssh ${release.tag_name} (${archive})...`);
-  const archiveBuf = await fetchBuffer(deps.fetchFn, archiveAsset.browser_download_url, ARCHIVE_FETCH_TIMEOUT_MS, ARCHIVE_MAX_BYTES);
-  const checksumBuf = await fetchBuffer(deps.fetchFn, checksumAsset.browser_download_url, RELEASE_FETCH_TIMEOUT_MS, 1024 * 1024);
+  console.log(`Downloading mssh ${release.tag} (${archive})...`);
+  const archiveBuf = await fetchBuffer(deps.fetchFn, archiveUrl, ARCHIVE_FETCH_TIMEOUT_MS, ARCHIVE_MAX_BYTES);
+  const checksumBuf = await fetchBuffer(deps.fetchFn, checksumUrl, RELEASE_FETCH_TIMEOUT_MS, 1024 * 1024);
 
   const expected = checksumFor(checksumBuf.toString("utf8"), archive);
   const actual = createHash("sha256").update(archiveBuf).digest("hex");

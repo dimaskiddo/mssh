@@ -174,7 +174,6 @@ ExecStart=/usr/local/bin/mssh bastion -N -L 8080:localhost:80
     ```sh
     sudo mssh update   # if mssh is installed somewhere only root can write to
     ```
-    Works only on a compiled release binary, not `bun index.ts` from source. Needs no `~/.mssh`, password, or ssh — it's dispatched before any of that.
 
 ### ℹ️ Help & Version
 *   **`mssh version`** / **`mssh --version`**: Prints the product name, version, and author.

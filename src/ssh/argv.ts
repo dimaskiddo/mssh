@@ -4,7 +4,7 @@ import type { Host } from "./host";
 // ssh's argv mixes flags and the target in any order; matching every token
 // against configured aliases avoids reimplementing ssh's own getopt.
 //
-// ponytail: this also matches a flag's *value* if it happens to equal a
+// this also matches a flag's *value* if it happens to equal a
 // configured alias (e.g. `-l web1 db` treats "web1" as a target too, scoping
 // its keys alongside db's). Over-includes, never under-includes. A precise
 // fix means parsing -J/ProxyJump-style flags to tell target from value, which

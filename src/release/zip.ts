@@ -1,7 +1,7 @@
 // Hand-rolled: avoids a new dependency for reading only the release archives
 // .scripts/release.ts builds, never an arbitrary zip file.
 //
-// ponytail: no ZIP64 and no multi-disk archives — our own release archives
+// no ZIP64 and no multi-disk archives — our own release archives
 // are single binaries well under 4 GiB. Upgrade path: parse the ZIP64 extra
 // field (0x0001) when a release archive ever needs one.
 import { inflateRawSync } from "node:zlib";
